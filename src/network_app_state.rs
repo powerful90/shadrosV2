@@ -1,8 +1,9 @@
-// Enhanced NetworkAppState with live agent management
-use eframe::egui::{self, Context, Ui, Color32, RichText, ScrollArea, Button, TextEdit};
+// Enhanced NetworkAppState with Cobalt Strike-like interface
+use eframe::egui::{self, Context, Ui, Color32, RichText, ScrollArea, Button, TextEdit, TextStyle};
 use egui_extras::{TableBuilder, Column};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
 use tokio::runtime::Runtime;
 
 use crate::client_api::{ClientApi, ServerMessage, ListenerInfo};
@@ -17,6 +18,25 @@ enum Tab {
     Agents,
     Bof,
     Settings,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommandEntry {
+    pub timestamp: String,
+    pub agent_id: String,
+    pub command: String,
+    pub output: Option<String>,
+    pub success: bool,
+    pub task_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct BeaconSession {
+    pub agent_id: String,
+    pub hostname: String,
+    pub username: String,
+    pub command_history: Vec<CommandEntry>,
+    pub current_directory: String,
 }
 
 pub struct NetworkAppState {
@@ -45,10 +65,12 @@ pub struct NetworkAppState {
     bof_args: String,
     bof_target: String,
     
-    // Command execution state
+    // Enhanced command execution state
     command_input: String,
     selected_agent: Option<String>,
-    command_history: Vec<(String, String, String)>, // (agent_id, command, timestamp)
+    beacon_sessions: HashMap<String, BeaconSession>,
+    active_beacon: Option<String>,
+    command_counter: u32,
     
     // Status messages
     status_message: String,
@@ -60,6 +82,10 @@ pub struct NetworkAppState {
     
     // Last server poll time
     last_poll: Instant,
+    
+    // UI state for beacon console
+    show_beacon_console: bool,
+    console_scroll_to_bottom: bool,
 }
 
 impl NetworkAppState {
@@ -88,7 +114,9 @@ impl NetworkAppState {
             
             command_input: String::new(),
             selected_agent: None,
-            command_history: Vec::new(),
+            beacon_sessions: HashMap::new(),
+            active_beacon: None,
+            command_counter: 0,
             
             status_message: "".to_string(),
             status_time: None,
@@ -97,6 +125,9 @@ impl NetworkAppState {
             agents: Vec::new(),
             
             last_poll: Instant::now(),
+            
+            show_beacon_console: false,
+            console_scroll_to_bottom: false,
         }
     }
     
@@ -116,7 +147,37 @@ impl NetworkAppState {
                         self.listeners = listeners;
                     },
                     ServerMessage::AgentsUpdate { agents } => {
-                        self.agents = agents;
+                        self.agents = agents.clone();
+                        // Update beacon sessions for new agents
+                        for agent in agents {
+                            if !self.beacon_sessions.contains_key(&agent.id) {
+                                let session = BeaconSession {
+                                    agent_id: agent.id.clone(),
+                                    hostname: agent.hostname.clone(),
+                                    username: agent.username.clone(),
+                                    command_history: Vec::new(),
+                                    current_directory: "C:\\".to_string(),
+                                };
+                                self.beacon_sessions.insert(agent.id.clone(), session);
+                            }
+                        }
+                    },
+                    ServerMessage::CommandResult { agent_id, task_id, command: _, output, success } => {
+                        // Update the command entry with real output from the agent
+                        if let Some(session) = self.beacon_sessions.get_mut(&agent_id) {
+                            if let Some(cmd_entry) = session.command_history.iter_mut().rev().find(|c| c.task_id == task_id) {
+                                cmd_entry.output = Some(output);
+                                cmd_entry.success = success;
+                            }
+                        }
+                        self.console_scroll_to_bottom = true;
+                        
+                        // Also show in status for immediate feedback
+                        if success {
+                            self.set_status(&format!("Command completed on {}", agent_id));
+                        } else {
+                            self.set_status(&format!("Command failed on {}", agent_id));
+                        }
                     },
                     ServerMessage::Success { message } => {
                         self.set_status(&message);
@@ -130,7 +191,7 @@ impl NetworkAppState {
         }
         
         // Poll server periodically
-        if self.last_poll.elapsed() > Duration::from_secs(3) {
+        if self.last_poll.elapsed() > Duration::from_secs(2) { // Faster polling for real-time feel
             let client_api_clone = self.client_api.clone();
             
             self.runtime.spawn_blocking(move || {
@@ -147,10 +208,29 @@ impl NetworkAppState {
         }
     }
     
+    // Remove the simulate_command_output method since we now get real results from the server
     fn execute_command(&mut self, agent_id: &str, command: &str) {
         if command.trim().is_empty() {
             self.set_status("Command cannot be empty");
             return;
+        }
+        
+        self.command_counter += 1;
+        let task_id = format!("task-{}-{}", agent_id, self.command_counter);
+        
+        // Add command to history immediately (output will be updated when result comes back)
+        let timestamp = format_timestamp(SystemTime::now());
+        let cmd_entry = CommandEntry {
+            timestamp: timestamp.clone(),
+            agent_id: agent_id.to_string(),
+            command: command.to_string(),
+            output: None, // Will be filled when real result comes back
+            success: false,
+            task_id: task_id.clone(),
+        };
+        
+        if let Some(session) = self.beacon_sessions.get_mut(agent_id) {
+            session.command_history.push(cmd_entry);
         }
         
         // Send command through client API
@@ -172,22 +252,18 @@ impl NetworkAppState {
             });
         });
         
-        // Add to command history
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .to_string();
-        
-        self.command_history.push((
-            agent_id.to_string(),
-            command.to_string(),
-            timestamp
-        ));
-        
-        self.set_status(&format!("Command '{}' sent to agent {}", command, agent_id));
+        self.set_status(&format!("Command '{}' sent to beacon", command));
         self.command_input.clear();
+        self.console_scroll_to_bottom = true;
     }
+    
+    fn open_beacon_console(&mut self, agent_id: &str) {
+        self.active_beacon = Some(agent_id.to_string());
+        self.show_beacon_console = true;
+        self.selected_agent = Some(agent_id.to_string());
+    }
+    
+    // [Previous methods for add_listener, start_listener, etc. remain the same...]
     
     fn add_listener(&mut self) {
         let port = self.listener_port.parse::<u16>().unwrap_or(8080);
@@ -313,6 +389,11 @@ impl eframe::App for NetworkAppState {
         // Request frequent repaints for live updates
         ctx.request_repaint_after(Duration::from_millis(1000));
         
+        // Handle beacon console window
+        if self.show_beacon_console {
+            self.render_beacon_console(ctx);
+        }
+        
         // Top panel with status
         egui::TopBottomPanel::top("status_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -364,8 +445,153 @@ impl eframe::App for NetworkAppState {
     }
 }
 
-// UI Rendering
+// UI Rendering Implementation
 impl NetworkAppState {
+    fn render_beacon_console(&mut self, ctx: &Context) {
+        let mut open = true;
+        
+        if let Some(beacon_id) = &self.active_beacon.clone() {
+            let session = self.beacon_sessions.get(beacon_id).cloned();
+            
+            if let Some(session) = session {
+                egui::Window::new(format!("Beacon {} - {}@{}", beacon_id, session.username, session.hostname))
+                    .open(&mut open)
+                    .resizable(true)
+                    .default_size([800.0, 600.0])
+                    .show(ctx, |ui| {
+                        self.render_beacon_console_content(ui, &session);
+                    });
+            }
+        }
+        
+        if !open {
+            self.show_beacon_console = false;
+            self.active_beacon = None;
+        }
+    }
+    
+    fn render_beacon_console_content(&mut self, ui: &mut Ui, session: &BeaconSession) {
+        ui.horizontal(|ui| {
+            ui.label(format!("Beacon {} - {}@{}", session.agent_id, session.username, session.hostname));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Clear").clicked() {
+                    if let Some(mut_session) = self.beacon_sessions.get_mut(&session.agent_id) {
+                        mut_session.command_history.clear();
+                    }
+                }
+            });
+        });
+        
+        ui.separator();
+        
+        // Command output area
+        let available_height = ui.available_height() - 60.0; // Reserve space for input
+        ScrollArea::vertical()
+            .max_height(available_height)
+            .auto_shrink([false, false])
+            .stick_to_bottom(self.console_scroll_to_bottom)
+            .show(ui, |ui| {
+                ui.style_mut().override_text_style = Some(TextStyle::Monospace);
+                
+                for cmd_entry in &session.command_history {
+                    // Command prompt line
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("[{}]", cmd_entry.timestamp)).color(Color32::GRAY).small());
+                        ui.label(RichText::new(format!("beacon> ")).color(Color32::LIGHT_BLUE));
+                        ui.label(RichText::new(&cmd_entry.command).color(Color32::WHITE));
+                    });
+                    
+                    // Output
+                    if let Some(output) = &cmd_entry.output {
+                        for line in output.lines() {
+                            ui.label(RichText::new(line).color(if cmd_entry.success { Color32::LIGHT_GREEN } else { Color32::LIGHT_RED }));
+                        }
+                    } else {
+                        ui.label(RichText::new("Tasked beacon to run command...").color(Color32::YELLOW));
+                    }
+                    
+                    ui.add_space(5.0);
+                }
+                
+                if self.console_scroll_to_bottom {
+                    ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+                    self.console_scroll_to_bottom = false;
+                }
+            });
+        
+        ui.separator();
+        
+        // Command input
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("beacon> ").color(Color32::LIGHT_BLUE));
+            let response = ui.add(TextEdit::singleline(&mut self.command_input)
+                .desired_width(ui.available_width() - 80.0)
+                .hint_text("Enter command..."));
+            
+            if ui.button("Execute").clicked() && !self.command_input.trim().is_empty() {
+                let command = self.command_input.clone();
+                self.execute_command(&session.agent_id, &command);
+            }
+            
+            // Execute on Enter key
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.command_input.trim().is_empty() {
+                let command = self.command_input.clone();
+                self.execute_command(&session.agent_id, &command);
+            }
+        });
+        
+        // Quick command buttons with help
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Quick Commands:");
+            
+            let quick_commands = vec![
+                ("help", "help"),
+                ("whoami", "whoami"),
+                ("hostname", "hostname"),
+                ("pwd", "pwd"),
+                ("dir", "dir"),
+                ("ls", "ls -la"),
+                ("ipconfig", "ipconfig /all"),
+                ("ifconfig", "ifconfig -a"),
+                ("tasklist", "tasklist"),
+                ("ps", "ps aux"),
+                ("netstat", "netstat -an"),
+                ("systeminfo", "systeminfo"),
+                ("uname", "uname -a"),
+            ];
+            
+            for (label, cmd) in quick_commands {
+                if ui.small_button(label).clicked() {
+                    self.execute_command(&session.agent_id, cmd);
+                }
+            }
+        });
+        
+        ui.separator();
+        
+        // Advanced commands section
+        ui.collapsing("Advanced Commands", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let advanced_commands = vec![
+                    ("Get-Process", "powershell Get-Process"),
+                    ("Get-Service", "powershell Get-Service"),
+                    ("Get-EventLog", "powershell Get-EventLog -LogName System -Newest 10"),
+                    ("Get-LocalUser", "powershell Get-LocalUser"),
+                    ("Get-LocalGroup", "powershell Get-LocalGroup"),
+                    ("Get-NetTCPConnection", "powershell Get-NetTCPConnection"),
+                    ("Get-ChildItem", "powershell Get-ChildItem -Force"),
+                    ("Get-WmiObject", "powershell Get-WmiObject Win32_ComputerSystem"),
+                ];
+                
+                for (label, cmd) in advanced_commands {
+                    if ui.small_button(label).clicked() {
+                        self.execute_command(&session.agent_id, cmd);
+                    }
+                }
+            });
+        });
+    }
+    
     fn render_dashboard(&mut self, ui: &mut Ui) {
         ui.heading("Dashboard - Live C2 Status");
         ui.separator();
@@ -390,9 +616,9 @@ impl NetworkAppState {
             ui.group(|ui| {
                 ui.vertical(|ui| {
                     ui.add_space(10.0);
-                    ui.heading(RichText::new(format!("🔴 {} Live Agents", agent_count)).color(Color32::RED));
-                    ui.label("Real-time agent connections");
-                    if ui.button("View Agents").clicked() {
+                    ui.heading(RichText::new(format!("🔴 {} Live Beacons", agent_count)).color(Color32::RED));
+                    ui.label("Real-time beacon connections");
+                    if ui.button("View Beacons").clicked() {
                         self.current_tab = Tab::Agents;
                     }
                 });
@@ -401,41 +627,169 @@ impl NetworkAppState {
         
         ui.separator();
         
-        // Recent agent activity
-        if !self.agents.is_empty() {
-            ui.heading("Recent Agent Activity");
+        // Recent beacon activity - collect agent data first to avoid borrowing issues
+        let agents_data: Vec<_> = self.agents.iter().map(|agent| {
+            let time_ago = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() - agent.last_seen;
+            
+            (agent.id.clone(), agent.username.clone(), agent.hostname.clone(), time_ago)
+        }).collect();
+        
+        if !agents_data.is_empty() {
+            ui.heading("Recent Beacon Activity");
             ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                for agent in &self.agents {
-                    let time_ago = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() - agent.last_seen;
-                    
+                for (agent_id, username, hostname, time_ago) in agents_data {
                     let status_color = if time_ago < 120 { Color32::GREEN } else { Color32::YELLOW };
                     
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("●").color(status_color));
-                        ui.label(format!("{}@{}", agent.username, agent.hostname));
+                        ui.label(format!("{}@{}", username, hostname));
                         ui.label(format!("({} ago)", format_time_ago(time_ago)));
+                        if ui.small_button("Interact").clicked() {
+                            self.open_beacon_console(&agent_id);
+                        }
                     });
                 }
             });
         } else {
-            ui.label("No agents connected yet. Generate and run an agent to see it here.");
+            ui.label("No beacons connected yet. Generate and run an agent to see it here.");
         }
+    }
+    
+    fn render_live_agents(&mut self, ui: &mut Ui) {
+        ui.heading("🔴 Live Beacons");
+        ui.separator();
+        
+        // Agent generation form
+        ui.collapsing("Generate New Agent", |ui| {
+            ui.group(|ui| {
+                ui.heading("Configuration");
+                
+                ui.horizontal(|ui| {
+                    ui.label("Listener URL:");
+                    ui.text_edit_singleline(&mut self.agent_listener_url);
+                });
+                
+                ui.horizontal(|ui| {
+                    ui.label("Format:");
+                    egui::ComboBox::from_id_source("agent_format")
+                        .selected_text(&self.agent_format)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.agent_format, "exe".to_string(), "Windows EXE");
+                            ui.selectable_value(&mut self.agent_format, "dll".to_string(), "Windows DLL");
+                        });
+                    
+                    ui.label("Architecture:");
+                    egui::ComboBox::from_id_source("agent_architecture")
+                        .selected_text(&self.agent_architecture)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.agent_architecture, "x64".to_string(), "x64");
+                            ui.selectable_value(&mut self.agent_architecture, "x86".to_string(), "x86");
+                        });
+                });
+                
+                ui.horizontal(|ui| {
+                    ui.label("Sleep Time (seconds):");
+                    ui.text_edit_singleline(&mut self.agent_sleep_time);
+                    
+                    ui.label("Jitter (%):");
+                    ui.text_edit_singleline(&mut self.agent_jitter);
+                });
+                
+                ui.horizontal(|ui| {
+                    ui.label("Output File:");
+                    ui.text_edit_singleline(&mut self.agent_output_path);
+                    
+                    if ui.button("Browse...").clicked() {
+                        self.browse_agent_output();
+                    }
+                });
+                
+                if ui.button("🚀 Generate Agent").clicked() {
+                    self.generate_agent();
+                }
+            });
+        });
         
         ui.separator();
-        ui.heading("Quick Actions");
         
-        ui.horizontal(|ui| {
-            if ui.button("🚀 Add Listener").clicked() {
-                self.current_tab = Tab::Listeners;
-            }
-            
-            if ui.button("⚡ Generate Agent").clicked() {
-                self.current_tab = Tab::Agents;
-            }
-        });
+        // Live beacons list
+        ui.heading(format!("Connected Beacons ({})", self.agents.len()));
+        
+        if self.agents.is_empty() {
+            ui.label("No beacons connected. Generate and run an agent to see it appear here.");
+            ui.label("Beacons will appear automatically when they connect to your listeners.");
+        } else {
+            ScrollArea::vertical().show(ui, |ui| {
+                TableBuilder::new(ui)
+                    .column(Column::auto().at_least(80.0))
+                    .column(Column::auto().at_least(120.0))
+                    .column(Column::auto().at_least(100.0))
+                    .column(Column::auto().at_least(100.0))
+                    .column(Column::auto().at_least(100.0))
+                    .column(Column::auto().at_least(80.0))
+                    .column(Column::remainder())
+                    .header(20.0, |mut header| {
+                        header.col(|ui| { ui.heading("Status"); });
+                        header.col(|ui| { ui.heading("ID"); });
+                        header.col(|ui| { ui.heading("Computer"); });
+                        header.col(|ui| { ui.heading("User"); });
+                        header.col(|ui| { ui.heading("Process"); });
+                        header.col(|ui| { ui.heading("Last Seen"); });
+                        header.col(|ui| { ui.heading("Actions"); });
+                    })
+                    .body(|mut body| {
+                        // Collect agent data to avoid borrowing issues
+                        let agents_data: Vec<_> = self.agents.iter().map(|agent| {
+                            let time_ago = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs() - agent.last_seen;
+                            
+                            let (status_text, status_color) = if time_ago < 120 {
+                                ("🟢 Online", Color32::GREEN)
+                            } else if time_ago < 300 {
+                                ("🟡 Idle", Color32::YELLOW)
+                            } else {
+                                ("🔴 Offline", Color32::RED)
+                            };
+                            
+                            (agent.id.clone(), agent.hostname.clone(), agent.username.clone(), 
+                             status_text, status_color, time_ago)
+                        }).collect();
+                        
+                        for (agent_id, hostname, username, status_text, status_color, time_ago) in agents_data {
+                            body.row(30.0, |mut row| {
+                                row.col(|ui| { 
+                                    ui.label(RichText::new(status_text).color(status_color)); 
+                                });
+                                row.col(|ui| { 
+                                    ui.label(RichText::new(&agent_id).monospace());
+                                });
+                                row.col(|ui| { ui.label(&hostname); });
+                                row.col(|ui| { ui.label(&username); });
+                                row.col(|ui| { ui.label("beacon.exe"); }); // Process name
+                                row.col(|ui| { 
+                                    ui.label(format_time_ago(time_ago));
+                                });
+                                row.col(|ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Interact").clicked() {
+                                            self.open_beacon_console(&agent_id);
+                                        }
+                                        if ui.small_button("Kill").clicked() {
+                                            // Would send kill command to beacon
+                                            self.set_status(&format!("Terminating beacon {}", agent_id));
+                                        }
+                                    });
+                                });
+                            });
+                        }
+                    });
+            });
+        }
     }
     
     fn render_listeners(&mut self, ui: &mut Ui) {
@@ -528,214 +882,12 @@ impl NetworkAppState {
         }
     }
     
-    fn render_live_agents(&mut self, ui: &mut Ui) {
-        ui.heading("🔴 Live Agents");
-        ui.separator();
-        
-        // Agent generation form
-        ui.collapsing("Generate New Agent", |ui| {
-            ui.group(|ui| {
-                ui.heading("Configuration");
-                
-                ui.horizontal(|ui| {
-                    ui.label("Listener URL:");
-                    ui.text_edit_singleline(&mut self.agent_listener_url);
-                });
-                
-                ui.horizontal(|ui| {
-                    ui.label("Format:");
-                    egui::ComboBox::from_id_source("agent_format")
-                        .selected_text(&self.agent_format)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.agent_format, "exe".to_string(), "Windows EXE");
-                            ui.selectable_value(&mut self.agent_format, "dll".to_string(), "Windows DLL");
-                        });
-                    
-                    ui.label("Architecture:");
-                    egui::ComboBox::from_id_source("agent_architecture")
-                        .selected_text(&self.agent_architecture)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.agent_architecture, "x64".to_string(), "x64");
-                            ui.selectable_value(&mut self.agent_architecture, "x86".to_string(), "x86");
-                        });
-                });
-                
-                ui.horizontal(|ui| {
-                    ui.label("Sleep Time (seconds):");
-                    ui.text_edit_singleline(&mut self.agent_sleep_time);
-                    
-                    ui.label("Jitter (%):");
-                    ui.text_edit_singleline(&mut self.agent_jitter);
-                });
-                
-                ui.horizontal(|ui| {
-                    ui.label("Output File:");
-                    ui.text_edit_singleline(&mut self.agent_output_path);
-                    
-                    if ui.button("Browse...").clicked() {
-                        self.browse_agent_output();
-                    }
-                });
-                
-                if ui.button("🚀 Generate Agent").clicked() {
-                    self.generate_agent();
-                }
-            });
-        });
-        
-        ui.separator();
-        
-        // Command execution panel
-        if !self.agents.is_empty() {
-            ui.heading("Command Execution");
-            
-            ui.horizontal(|ui| {
-                ui.label("Target Agent:");
-                egui::ComboBox::from_id_source("target_agent")
-                    .selected_text(self.selected_agent.as_ref().unwrap_or(&"Select Agent".to_string()))
-                    .show_ui(ui, |ui| {
-                        for agent in &self.agents {
-                            let display_text = format!("{}@{} ({})", agent.username, agent.hostname, agent.id);
-                            ui.selectable_value(&mut self.selected_agent, Some(agent.id.clone()), display_text);
-                        }
-                    });
-                
-                ui.label("Command:");
-                let response = ui.add(TextEdit::singleline(&mut self.command_input).hint_text("Enter command (e.g., whoami, dir, ipconfig)"));
-                
-                if ui.button("Execute").clicked() && self.selected_agent.is_some() {
-                    if let Some(agent_id) = self.selected_agent.clone() {
-                        let command = self.command_input.clone();
-                        self.execute_command(&agent_id, &command);
-                    }
-                }
-                
-                // Execute on Enter key
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && self.selected_agent.is_some() {
-                    if let Some(agent_id) = self.selected_agent.clone() {
-                        let command = self.command_input.clone();
-                        self.execute_command(&agent_id, &command);
-                    }
-                }
-            });
-            
-            // Quick command buttons
-            if self.selected_agent.is_some() {
-                ui.horizontal(|ui| {
-                    ui.label("Quick Commands:");
-                    let quick_commands = vec![
-                        ("whoami", "whoami"),
-                        ("hostname", "hostname"),
-                        ("dir", "dir"),
-                        ("ipconfig", "ipconfig"),
-                        ("tasklist", "tasklist"),
-                        ("systeminfo", "systeminfo"),
-                    ];
-                    
-                    for (label, cmd) in quick_commands {
-                        if ui.button(label).clicked() {
-                            if let Some(agent_id) = self.selected_agent.clone() {
-                                self.execute_command(&agent_id, cmd);
-                            }
-                        }
-                    }
-                });
-            }
-            
-            ui.separator();
-        }
-        
-        // Live agents list
-        ui.heading(format!("Connected Agents ({})", self.agents.len()));
-        
-        if self.agents.is_empty() {
-            ui.label("No agents connected. Generate and run an agent to see it appear here.");
-            ui.label("Agents will appear automatically when they connect to your listeners.");
-        } else {
-            ScrollArea::vertical().show(ui, |ui| {
-                TableBuilder::new(ui)
-                    .column(Column::auto().at_least(80.0))
-                    .column(Column::auto().at_least(120.0))
-                    .column(Column::auto().at_least(100.0))
-                    .column(Column::auto().at_least(100.0))
-                    .column(Column::auto().at_least(100.0))
-                    .column(Column::auto().at_least(80.0))
-                    .column(Column::remainder())
-                    .header(20.0, |mut header| {
-                        header.col(|ui| { ui.heading("Status"); });
-                        header.col(|ui| { ui.heading("ID"); });
-                        header.col(|ui| { ui.heading("Hostname"); });
-                        header.col(|ui| { ui.heading("Username"); });
-                        header.col(|ui| { ui.heading("OS"); });
-                        header.col(|ui| { ui.heading("Last Seen"); });
-                        header.col(|ui| { ui.heading("Actions"); });
-                    })
-                    .body(|mut body| {
-                        let agents_snapshot = self.agents.clone();
-                        
-                        for agent in agents_snapshot {
-                            let time_ago = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs() - agent.last_seen;
-                            
-                            let (status_text, status_color) = if time_ago < 120 {
-                                ("🟢 Online", Color32::GREEN)
-                            } else if time_ago < 300 {
-                                ("🟡 Idle", Color32::YELLOW)
-                            } else {
-                                ("🔴 Offline", Color32::RED)
-                            };
-                            
-                            body.row(30.0, |mut row| {
-                                row.col(|ui| { 
-                                    ui.label(RichText::new(status_text).color(status_color)); 
-                                });
-                                row.col(|ui| { 
-                                    ui.label(RichText::new(&agent.id).monospace());
-                                });
-                                row.col(|ui| { ui.label(&agent.hostname); });
-                                row.col(|ui| { ui.label(&agent.username); });
-                                row.col(|ui| { ui.label(&agent.os_version); });
-                                row.col(|ui| { 
-                                    ui.label(format_time_ago(time_ago));
-                                });
-                                row.col(|ui| {
-                                    if ui.button("Select").clicked() {
-                                        self.selected_agent = Some(agent.id.clone());
-                                    }
-                                });
-                            });
-                        }
-                    });
-            });
-            
-            // Command history
-            if !self.command_history.is_empty() {
-                ui.separator();
-                ui.heading("Recent Commands");
-                ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
-                    for (agent_id, command, timestamp) in self.command_history.iter().rev().take(10) {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(agent_id).monospace().small());
-                            ui.label(">");
-                            ui.label(RichText::new(command).monospace());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(RichText::new(timestamp).small().weak());
-                            });
-                        });
-                    }
-                });
-            }
-        }
-    }
-    
     fn render_bof(&mut self, ui: &mut Ui) {
         ui.heading("BOF Execution");
         ui.separator();
         
         ui.label("BOF (Beacon Object File) execution will be implemented in a future version.");
-        ui.label("Use the Agents tab to execute commands on connected agents.");
+        ui.label("Use the Beacons tab to interact with connected beacons.");
     }
     
     fn render_settings(&mut self, ui: &mut Ui) {
@@ -753,4 +905,13 @@ fn format_time_ago(seconds: u64) -> String {
         3600..=86399 => format!("{}h ago", seconds / 3600),
         _ => format!("{}d ago", seconds / 86400),
     }
+}
+
+fn format_timestamp(time: SystemTime) -> String {
+    let duration = time.duration_since(UNIX_EPOCH).unwrap();
+    let secs = duration.as_secs();
+    let hours = (secs % 86400) / 3600;
+    let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }

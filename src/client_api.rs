@@ -1,4 +1,4 @@
-// src/client_api.rs
+// Enhanced client_api.rs with command result handling
 use std::net::SocketAddr;
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -9,7 +9,7 @@ use crate::listener::{ListenerConfig};
 use crate::agent::{AgentConfig};
 use crate::models::agent::Agent;
 
-// Message types for communication between client and server
+// Enhanced message types for communication between client and server
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientMessage {
     Authenticate { password: String },
@@ -28,6 +28,7 @@ pub enum ServerMessage {
     AuthResult { success: bool, message: String },
     ListenersUpdate { listeners: Vec<ListenerInfo> },
     AgentsUpdate { agents: Vec<Agent> },
+    CommandResult { agent_id: String, task_id: String, command: String, output: String, success: bool },
     Error { message: String },
     Success { message: String },
 }
@@ -37,6 +38,16 @@ pub struct ListenerInfo {
     pub id: usize,
     pub config: ListenerConfig,
     pub running: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CommandResult {
+    pub agent_id: String,
+    pub task_id: String,
+    pub command: String,
+    pub output: String,
+    pub success: bool,
+    pub timestamp: u64,
 }
 
 pub struct ClientApi {
@@ -79,7 +90,7 @@ impl ClientApi {
         
         // Spawn a task to receive messages from the server
         tokio::spawn(async move {
-            let mut buffer = [0u8; 4096];
+            let mut buffer = [0u8; 8192]; // Increased buffer size for command outputs
             
             loop {
                 // Read message length
@@ -90,7 +101,7 @@ impl ClientApi {
                 
                 let len = u32::from_be_bytes(len_bytes) as usize;
                 if len > buffer.len() {
-                    eprintln!("Message too large from server");
+                    eprintln!("Message too large from server: {} bytes", len);
                     break;
                 }
                 

