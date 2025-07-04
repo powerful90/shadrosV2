@@ -27,6 +27,7 @@ rand = "0.8.5"
 log = "0.4.17"
 env_logger = "0.10.0"
 clap = { version = "4.0", features = ["derive"] }
+lazy_static = "1.4.0"
 
 # Server-specific dependencies
 axum = "0.6.18"

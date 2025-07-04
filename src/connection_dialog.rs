@@ -29,6 +29,15 @@ impl ConnectionDialog {
         }
     }
     
+    // Public accessor methods for private fields
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+    
+    pub fn get_client_api(&self) -> Option<Arc<Mutex<ClientApi>>> {
+        self.client_api.clone()
+    }
+    
     pub fn connect(&mut self) -> Option<Arc<Mutex<ClientApi>>> {
         self.connecting = true;
         self.error_message = "".to_string();

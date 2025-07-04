@@ -10,7 +10,6 @@ mod client_api;
 mod connection_dialog;
 mod network_app_state;
 
-use std::sync::{Arc, Mutex};
 use connection_dialog::ConnectionDialog;
 use network_app_state::NetworkAppState;
 use eframe::egui;
@@ -40,9 +39,9 @@ impl eframe::App for AppSwitcher {
                 // Not connected yet, show the connection dialog
                 self.connection_dialog.update(ctx, frame);
                 
-                // Check if connected
-                if self.connection_dialog.connected {
-                    if let Some(client_api) = self.connection_dialog.client_api.clone() {
+                // Check if connected using the public accessor method
+                if self.connection_dialog.is_connected() {
+                    if let Some(client_api) = self.connection_dialog.get_client_api() {
                         self.network_app_state = Some(NetworkAppState::new(client_api));
                     }
                 }
