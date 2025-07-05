@@ -11,6 +11,8 @@ use crate::listener::{ListenerConfig, ListenerType};
 use crate::agent::AgentConfig;
 use crate::models::agent::Agent;
 
+use std::collections::HashMap;
+
 #[derive(PartialEq)]
 enum Tab {
     Dashboard,
@@ -1114,6 +1116,582 @@ impl NetworkAppState {
         });
     }
 }
+
+
+pub struct NetworkAppState {
+    // ... your existing fields ...
+    
+    // ADD these new BOF-related fields:
+    
+    // BOF management
+    bof_library: Vec<serde_json::Value>,
+    bof_stats: HashMap<String, u64>,
+    bof_search_results: Vec<serde_json::Value>,
+    
+    // BOF UI state
+    bof_search_query: String,
+    selected_bof_name: Option<String>,
+    bof_args_input: String,
+    bof_target_agent: Option<String>,
+    show_bof_help: bool,
+    bof_help_text: String,
+    bof_help_name: String,
+    
+    // BOF execution state
+    show_bof_library_tab: bool,
+    show_bof_execution_tab: bool,
+    show_bof_stats_tab: bool,
+}
+
+// ADD these to your NetworkAppState::new() method:
+impl NetworkAppState {
+    pub fn new(client_api: Arc<Mutex<ClientApi>>) -> Self {
+        NetworkAppState {
+            // ... your existing fields initialization ...
+            
+            // ADD these BOF field initializations:
+            bof_library: Vec::new(),
+            bof_stats: HashMap::new(),
+            bof_search_results: Vec::new(),
+            
+            bof_search_query: String::new(),
+            selected_bof_name: None,
+            bof_args_input: String::new(),
+            bof_target_agent: None,
+            show_bof_help: false,
+            bof_help_text: String::new(),
+            bof_help_name: String::new(),
+            
+            show_bof_library_tab: true,
+            show_bof_execution_tab: false,
+            show_bof_stats_tab: false,
+        }
+    }
+
+    // ADD this method to handle BOF-related server messages in your poll_server method:
+    fn handle_bof_messages(&mut self, msg: &ServerMessage) {
+        match msg {
+            ServerMessage::BofLibrary { bofs } => {
+                self.bof_library = bofs.clone();
+                println!("📚 Received BOF library with {} BOFs", bofs.len());
+            },
+            ServerMessage::BofStats { stats } => {
+                self.bof_stats = stats.clone();
+                println!("📊 Received BOF statistics");
+            },
+            ServerMessage::BofHelp { bof_name, help_text } => {
+                self.bof_help_name = bof_name.clone();
+                self.bof_help_text = help_text.clone();
+                self.show_bof_help = true;
+                println!("📖 Received help for BOF: {}", bof_name);
+            },
+            ServerMessage::BofSearchResults { results } => {
+                self.bof_search_results = results.clone();
+                println!("🔍 Received {} BOF search results", results.len());
+            },
+            _ => {} // Handle other messages normally
+        }
+    }
+
+    // REPLACE your existing render_bof method with this enhanced version:
+    fn render_bof(&mut self, ui: &mut Ui) {
+        let bg_dark = Color32::from_rgb(15, 15, 15);
+        let bg_medium = Color32::from_rgb(25, 25, 25);
+        let bg_light = Color32::from_rgb(35, 35, 35);
+        let accent_blue = Color32::from_rgb(100, 149, 237);
+        let accent_green = Color32::from_rgb(152, 251, 152);
+        let accent_red = Color32::from_rgb(255, 105, 97);
+        let accent_yellow = Color32::from_rgb(255, 215, 0);
+        let accent_purple = Color32::from_rgb(186, 85, 211);
+        let text_primary = Color32::from_rgb(220, 220, 220);
+        let text_secondary = Color32::from_rgb(170, 170, 170);
+
+        ui.heading(RichText::new("⚡ BOF Execution & Management").color(accent_purple).size(18.0));
+        
+        // BOF statistics and quick info
+        Frame::none()
+            .fill(bg_medium)
+            .inner_margin(Margin::same(8.0))
+            .rounding(Rounding::same(6.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("📚 {} BOFs Available", self.bof_library.len()))
+                        .color(accent_blue).size(12.0));
+                    ui.separator();
+                    ui.label(RichText::new(format!("✅ {} Executions", 
+                        self.bof_stats.get("total_executions").unwrap_or(&0)))
+                        .color(accent_green).size(12.0));
+                    ui.separator();
+                    ui.label(RichText::new(format!("📦 {} Cached", 
+                        self.bof_stats.get("cached_bofs").unwrap_or(&0)))
+                        .color(accent_yellow).size(12.0));
+                });
+            });
+
+        ui.separator();
+
+        // Tab navigation for BOF management
+        ui.horizontal(|ui| {
+            if ui.selectable_label(self.show_bof_library_tab, 
+                RichText::new("📚 BOF Library").color(if self.show_bof_library_tab { accent_green } else { text_primary })).clicked() {
+                self.show_bof_library_tab = true;
+                self.show_bof_execution_tab = false;
+                self.show_bof_stats_tab = false;
+                
+                // Request BOF library from server
+                let client_api_clone = self.client_api.clone();
+                self.runtime.spawn_blocking(move || {
+                    let runtime = Runtime::new().unwrap();
+                    runtime.block_on(async {
+                        if let Ok(client) = client_api_clone.try_lock() {
+                            let _ = client.get_bof_library().await;
+                        }
+                    });
+                });
+            }
+            
+            if ui.selectable_label(self.show_bof_execution_tab, 
+                RichText::new("🚀 Execute BOF").color(if self.show_bof_execution_tab { accent_green } else { text_primary })).clicked() {
+                self.show_bof_library_tab = false;
+                self.show_bof_execution_tab = true;
+                self.show_bof_stats_tab = false;
+            }
+            
+            if ui.selectable_label(self.show_bof_stats_tab, 
+                RichText::new("📊 Statistics").color(if self.show_bof_stats_tab { accent_green } else { text_primary })).clicked() {
+                self.show_bof_library_tab = false;
+                self.show_bof_execution_tab = false;
+                self.show_bof_stats_tab = true;
+                
+                // Request BOF stats from server
+                let client_api_clone = self.client_api.clone();
+                self.runtime.spawn_blocking(move || {
+                    let runtime = Runtime::new().unwrap();
+                    runtime.block_on(async {
+                        if let Ok(client) = client_api_clone.try_lock() {
+                            let _ = client.get_bof_stats().await;
+                        }
+                    });
+                });
+            }
+        });
+
+        ui.separator();
+
+        // Render appropriate tab content
+        if self.show_bof_library_tab {
+            self.render_bof_library(ui, bg_medium, accent_blue, accent_green, accent_red, accent_yellow, text_primary, text_secondary);
+        } else if self.show_bof_execution_tab {
+            self.render_bof_execution(ui, bg_medium, accent_blue, accent_green, accent_red, accent_yellow, text_primary, text_secondary);
+        } else if self.show_bof_stats_tab {
+            self.render_bof_statistics(ui, bg_medium, accent_blue, accent_green, accent_red, accent_yellow, text_primary, text_secondary);
+        }
+
+        // BOF help window
+        if self.show_bof_help {
+            let mut open = true;
+            egui::Window::new(format!("📖 BOF Help: {}", self.bof_help_name))
+                .open(&mut open)
+                .resizable(true)
+                .default_size([600.0, 500.0])
+                .show(ui.ctx(), |ui| {
+                    ScrollArea::vertical().show(ui, |ui| {
+                        ui.label(RichText::new(&self.bof_help_text)
+                            .color(text_primary).size(12.0).monospace());
+                    });
+                });
+            
+            if !open {
+                self.show_bof_help = false;
+            }
+        }
+    }
+
+    // ADD this new method for BOF library rendering:
+    fn render_bof_library(&mut self, ui: &mut Ui, bg_medium: Color32, accent_blue: Color32, accent_green: Color32, 
+                         accent_red: Color32, accent_yellow: Color32, text_primary: Color32, text_secondary: Color32) {
+        
+        // Search controls
+        Frame::none()
+            .fill(bg_medium)
+            .inner_margin(Margin::same(8.0))
+            .rounding(Rounding::same(4.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("🔍 Search BOFs:").color(text_primary));
+                    ui.text_edit_singleline(&mut self.bof_search_query);
+                    
+                    if ui.add(Button::new(RichText::new("Search").color(Color32::WHITE))
+                        .fill(accent_blue)).clicked() {
+                        self.search_bofs();
+                    }
+                    
+                    if ui.add(Button::new(RichText::new("🔄 Refresh").color(Color32::WHITE))
+                        .fill(accent_green)).clicked() {
+                        self.refresh_bof_library();
+                    }
+                });
+            });
+
+        ui.add_space(5.0);
+
+        // BOF library list
+        let bofs_to_display = if self.bof_search_query.is_empty() || self.bof_search_results.is_empty() {
+            &self.bof_library
+        } else {
+            &self.bof_search_results
+        };
+
+        if bofs_to_display.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(30.0);
+                ui.label(RichText::new("📭 No BOFs available")
+                    .color(text_secondary).size(14.0));
+                ui.label(RichText::new("Click Refresh to load BOF library from server")
+                    .color(text_secondary).size(12.0));
+                ui.add_space(30.0);
+            });
+        } else {
+            ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                for bof in bofs_to_display {
+                    let name = bof.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                    let description = bof.get("description").and_then(|v| v.as_str()).unwrap_or("No description");
+                    let author = bof.get("author").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                    let opsec_level = bof.get("opsec_level").and_then(|v| v.as_str()).unwrap_or("Standard");
+                    
+                    let is_selected = self.selected_bof_name.as_ref() == Some(&name.to_string());
+                    
+                    Frame::none()
+                        .fill(if is_selected { bg_medium } else { Color32::from_rgb(20, 20, 20) })
+                        .inner_margin(Margin::same(8.0))
+                        .rounding(Rounding::same(4.0))
+                        .stroke(if is_selected { 
+                            Stroke::new(1.0, accent_blue) 
+                        } else { 
+                            Stroke::new(0.5, Color32::from_rgb(60, 60, 60)) 
+                        })
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                // BOF info
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(name).color(accent_blue).size(14.0).strong());
+                                        
+                                        // OPSEC level indicator
+                                        let (opsec_icon, opsec_color) = match opsec_level {
+                                            "Stealth" => ("🟢", accent_green),
+                                            "Careful" => ("🟡", accent_yellow),
+                                            "Standard" => ("🟠", accent_yellow),
+                                            "Loud" => ("🔴", accent_red),
+                                            _ => ("⚪", text_secondary),
+                                        };
+                                        ui.label(RichText::new(opsec_icon).color(opsec_color));
+                                    });
+                                    
+                                    ui.label(RichText::new(description).color(text_secondary).size(11.0));
+                                    ui.label(RichText::new(format!("by {}", author)).color(text_secondary).size(10.0));
+                                });
+                                
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.add(Button::new(RichText::new("🚀 Execute").color(Color32::WHITE))
+                                        .fill(accent_green)).clicked() {
+                                        self.selected_bof_name = Some(name.to_string());
+                                        self.show_bof_execution_tab = true;
+                                        self.show_bof_library_tab = false;
+                                    }
+                                    
+                                    if ui.add(Button::new(RichText::new("ℹ️ Help").color(Color32::WHITE))
+                                        .fill(accent_blue)).clicked() {
+                                        self.get_bof_help(name);
+                                    }
+                                });
+                            });
+                        });
+
+                    ui.add_space(3.0);
+                }
+            });
+        }
+    }
+
+    // ADD this new method for BOF execution rendering:
+    fn render_bof_execution(&mut self, ui: &mut Ui, bg_medium: Color32, accent_blue: Color32, accent_green: Color32, 
+                           accent_red: Color32, accent_yellow: Color32, text_primary: Color32, text_secondary: Color32) {
+        
+        // BOF selection and arguments
+        Frame::none()
+            .fill(bg_medium)
+            .inner_margin(Margin::same(10.0))
+            .rounding(Rounding::same(6.0))
+            .show(ui, |ui| {
+                ui.label(RichText::new("🎯 BOF Execution Setup").color(accent_blue).size(16.0).strong());
+                
+                ui.add_space(10.0);
+                
+                // BOF selection
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("BOF:").color(text_primary));
+                    
+                    let selected_text = self.selected_bof_name.as_ref().unwrap_or(&"Select BOF...".to_string()).clone();
+                    egui::ComboBox::from_id_source("bof_selection")
+                        .selected_text(&selected_text)
+                        .show_ui(ui, |ui| {
+                            for bof in &self.bof_library {
+                                if let Some(name) = bof.get("name").and_then(|v| v.as_str()) {
+                                    ui.selectable_value(&mut self.selected_bof_name, Some(name.to_string()), name);
+                                }
+                            }
+                        });
+                    
+                    if self.selected_bof_name.is_some() {
+                        if ui.button("ℹ️").clicked() {
+                            if let Some(ref bof_name) = self.selected_bof_name {
+                                self.get_bof_help(bof_name);
+                            }
+                        }
+                    }
+                });
+                
+                // Arguments input
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Arguments:").color(text_primary));
+                    ui.text_edit_singleline(&mut self.bof_args_input);
+                });
+                
+                // Target agent selection
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Target:").color(text_primary));
+                    
+                    let target_text = match &self.bof_target_agent {
+                        Some(agent) => agent.clone(),
+                        None => "Select Agent...".to_string(),
+                    };
+                    
+                    egui::ComboBox::from_id_source("target_agent")
+                        .selected_text(&target_text)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.bof_target_agent, Some("local".to_string()), "🧪 Local Test");
+                            ui.selectable_value(&mut self.bof_target_agent, Some("all".to_string()), "📡 All Agents");
+                            
+                            for agent in &self.agents.clone() {
+                                ui.selectable_value(
+                                    &mut self.bof_target_agent, 
+                                    Some(agent.id.clone()), 
+                                    format!("🔴 {} ({}@{})", agent.id, agent.username, agent.hostname)
+                                );
+                            }
+                        });
+                });
+                
+                ui.add_space(10.0);
+                
+                // Execution buttons
+                ui.horizontal(|ui| {
+                    let can_execute = self.selected_bof_name.is_some() && self.bof_target_agent.is_some();
+                    
+                    if ui.add_enabled(can_execute, 
+                        Button::new(RichText::new("🚀 Execute BOF").color(Color32::WHITE))
+                            .fill(accent_green)).clicked() {
+                        self.execute_selected_bof();
+                    }
+                    
+                    if ui.add(Button::new(RichText::new("🗑️ Clear").color(Color32::WHITE))
+                        .fill(accent_red)).clicked() {
+                        self.bof_args_input.clear();
+                        self.selected_bof_name = None;
+                        self.bof_target_agent = None;
+                    }
+                });
+            });
+    }
+
+    // ADD this new method for BOF statistics rendering:
+    fn render_bof_statistics(&mut self, ui: &mut Ui, bg_medium: Color32, accent_blue: Color32, accent_green: Color32, 
+                            accent_red: Color32, accent_yellow: Color32, text_primary: Color32, text_secondary: Color32) {
+        
+        ui.label(RichText::new("📊 BOF Execution Statistics").color(accent_blue).size(16.0).strong());
+        
+        // Statistics cards
+        ui.horizontal_wrapped(|ui| {
+            // Total BOFs
+            Frame::none()
+                .fill(bg_medium)
+                .inner_margin(Margin::same(10.0))
+                .rounding(Rounding::same(6.0))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new(format!("{}", self.bof_stats.get("total_bofs").unwrap_or(&0)))
+                            .color(accent_blue).size(24.0).strong());
+                        ui.label(RichText::new("Total BOFs").color(text_secondary));
+                    });
+                });
+            
+            // Total Executions
+            Frame::none()
+                .fill(bg_medium)
+                .inner_margin(Margin::same(10.0))
+                .rounding(Rounding::same(6.0))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new(format!("{}", self.bof_stats.get("total_executions").unwrap_or(&0)))
+                            .color(accent_green).size(24.0).strong());
+                        ui.label(RichText::new("Executions").color(text_secondary));
+                    });
+                });
+            
+            // Cached BOFs
+            Frame::none()
+                .fill(bg_medium)
+                .inner_margin(Margin::same(10.0))
+                .rounding(Rounding::same(6.0))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new(format!("{}", self.bof_stats.get("cached_bofs").unwrap_or(&0)))
+                            .color(accent_yellow).size(24.0).strong());
+                        ui.label(RichText::new("Cached").color(text_secondary));
+                    });
+                });
+        });
+        
+        ui.add_space(20.0);
+        
+        // OPSEC Level Breakdown
+        ui.label(RichText::new("🚨 BOFs by OPSEC Level").color(accent_blue).size(14.0).strong());
+        
+        Frame::none()
+            .fill(bg_medium)
+            .inner_margin(Margin::same(10.0))
+            .rounding(Rounding::same(6.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("🟢 Stealth: {}", self.bof_stats.get("stealth_bofs").unwrap_or(&0)))
+                        .color(accent_green));
+                    ui.separator();
+                    ui.label(RichText::new(format!("🟡 Careful: {}", self.bof_stats.get("careful_bofs").unwrap_or(&0)))
+                        .color(accent_yellow));
+                    ui.separator();
+                    ui.label(RichText::new(format!("🟠 Standard: {}", self.bof_stats.get("standard_bofs").unwrap_or(&0)))
+                        .color(accent_yellow));
+                    ui.separator();
+                    ui.label(RichText::new(format!("🔴 Loud: {}", self.bof_stats.get("loud_bofs").unwrap_or(&0)))
+                        .color(accent_red));
+                });
+            });
+    }
+
+    // ADD these helper methods:
+    fn search_bofs(&mut self) {
+        if !self.bof_search_query.trim().is_empty() {
+            let client_api_clone = self.client_api.clone();
+            let query = self.bof_search_query.clone();
+            
+            self.runtime.spawn_blocking(move || {
+                let runtime = Runtime::new().unwrap();
+                runtime.block_on(async {
+                    if let Ok(client) = client_api_clone.try_lock() {
+                        let _ = client.search_bofs(&query).await;
+                    }
+                });
+            });
+        }
+    }
+
+    fn refresh_bof_library(&mut self) {
+        let client_api_clone = self.client_api.clone();
+        
+        self.runtime.spawn_blocking(move || {
+            let runtime = Runtime::new().unwrap();
+            runtime.block_on(async {
+                if let Ok(client) = client_api_clone.try_lock() {
+                    let _ = client.get_bof_library().await;
+                }
+            });
+        });
+        
+        self.set_status("🔄 Refreshing BOF library...");
+    }
+
+    fn get_bof_help(&mut self, bof_name: &str) {
+        let client_api_clone = self.client_api.clone();
+        let name = bof_name.to_string();
+        
+        self.runtime.spawn_blocking(move || {
+            let runtime = Runtime::new().unwrap();
+            runtime.block_on(async {
+                if let Ok(client) = client_api_clone.try_lock() {
+                    let _ = client.get_bof_help(&name).await;
+                }
+            });
+        });
+    }
+
+    fn execute_selected_bof(&mut self) {
+        if let (Some(ref bof_name), Some(ref target)) = (&self.selected_bof_name, &self.bof_target_agent) {
+            let client_api_clone = self.client_api.clone();
+            let name = bof_name.clone();
+            let args = self.bof_args_input.clone();
+            let target_clone = target.clone();
+            
+            self.runtime.spawn_blocking(move || {
+                let runtime = Runtime::new().unwrap();
+                runtime.block_on(async {
+                    if let Ok(client) = client_api_clone.try_lock() {
+                        let _ = client.execute_bof_by_name(&name, &args, &target_clone).await;
+                    }
+                });
+            });
+            
+            self.set_status(&format!("🚀 Executing BOF '{}' on target '{}'", bof_name, target));
+            
+            // Clear inputs after execution
+            self.bof_args_input.clear();
+        }
+    }
+
+    // UPDATE your existing poll_server method to handle BOF messages:
+    fn poll_server(&mut self) {
+        let client_api_clone = self.client_api.clone();
+        let client_opt = client_api_clone.try_lock().ok();
+        
+        if let Some(mut client) = client_opt {
+            while let Some(msg) = client.try_receive_message() {
+                // Handle BOF messages
+                self.handle_bof_messages(&msg);
+                
+                // Handle existing messages (your existing code)
+                match &msg {
+                    ServerMessage::CommandResult { agent_id, task_id, output, success, .. } => {
+                        // Your existing command result handling
+                        println!("📥 CLIENT: Received CommandResult for agent {}", agent_id);
+                        // ... your existing code ...
+                    },
+                    ServerMessage::ListenersUpdate { listeners } => {
+                        self.listeners = listeners.clone();
+                    },
+                    ServerMessage::AgentsUpdate { agents } => {
+                        self.agents = agents.clone();
+                        // Update beacon sessions for new agents
+                        for agent in agents {
+                            if !self.beacon_sessions.contains_key(&agent.id) {
+                                let session = BeaconSession {
+                                    agent_id: agent.id.clone(),
+                                    hostname: agent.hostname.clone(),
+                                    username: agent.username.clone(),
+                                    command_history: Vec::new(),
+                                    current_directory: "C:\\".to_string(),
+                                };
+                                self.beacon_sessions.insert(agent.id.clone(), session);
+                            }
+                        }
+                    },
+                    // ... handle your other existing messages ...
+                    _ => {}
+                }
+            }
+        }
+        
+        // ... rest of your existing poll_server code ...
+    }
 
 impl eframe::App for NetworkAppState {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
