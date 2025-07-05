@@ -8,7 +8,9 @@ use serde::{Serialize, Deserialize};
 
 // Re-export the COFF loader
 pub mod coff_loader;
-pub use coff_loader::{CoffLoader, create_bof_runtime};
+pub use coff_loader::create_bof_runtime;
+#[allow(unused_imports)]
+pub use coff_loader::CoffLoader;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BofContext {

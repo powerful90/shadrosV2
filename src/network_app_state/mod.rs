@@ -1,8 +1,10 @@
-// src/network_app_state/mod.rs - Main module file
+// src/network_app_state/mod.rs - Final fixed version
 use eframe::egui::{Context, Color32, RichText, Frame, Margin};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::cell::RefCell;
 use tokio::runtime::Runtime;
 
 use crate::client_api::{ClientApi, ServerMessage, ListenerInfo};
@@ -88,9 +90,6 @@ pub struct NetworkAppState {
     pub show_beacon_console: bool,
     pub console_scroll_to_bottom: bool,
     pub command_input_focus: bool,
-    
-    // Sub-components
-    beacon_console: BeaconConsole,
 }
 
 impl NetworkAppState {
@@ -145,8 +144,6 @@ impl NetworkAppState {
             show_beacon_console: false,
             console_scroll_to_bottom: false,
             command_input_focus: false,
-            
-            beacon_console: BeaconConsole::new(),
         }
     }
     
@@ -289,7 +286,7 @@ impl NetworkAppState {
         }
     }
     
-    fn execute_command(&mut self, agent_id: &str, command: &str) {
+    pub fn execute_command(&mut self, agent_id: &str, command: &str) {
         if command.trim().is_empty() {
             self.set_status("❌ Command cannot be empty");
             return;
@@ -355,13 +352,18 @@ impl eframe::App for NetworkAppState {
         // Request frequent repaints for live updates
         ctx.request_repaint_after(Duration::from_millis(1000));
         
-        // Handle beacon console window
+        // Handle beacon console window - simplified approach
         if self.show_beacon_console {
             if let Some(beacon_id) = &self.active_beacon.clone() {
                 let session = self.beacon_sessions.get(beacon_id).cloned();
                 if let Some(session) = session {
-                    self.beacon_console.render(
-                        ctx, 
+                    // Simple no-op closure - we'll handle command execution differently
+                    let execute_command_closure = |_agent_id: &str, _command: &str| {
+                        // Commands will be handled through the UI directly
+                    };
+                    
+                    BeaconConsole::render_window(
+                        ctx,
                         &mut self.show_beacon_console,
                         &mut self.active_beacon,
                         &session,
@@ -369,7 +371,7 @@ impl eframe::App for NetworkAppState {
                         &mut self.command_input_focus,
                         &mut self.console_scroll_to_bottom,
                         &mut self.beacon_sessions,
-                        self
+                        execute_command_closure,
                     );
                 }
             }

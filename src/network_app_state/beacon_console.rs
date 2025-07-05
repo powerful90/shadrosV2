@@ -1,9 +1,9 @@
-// src/network_app_state/beacon_console.rs - Fixed beacon console component
+// src/network_app_state/beacon_console.rs - Fixed to avoid borrowing conflicts
 use eframe::egui::{Context, Ui, Color32, RichText, ScrollArea, Button, TextEdit, TextStyle, Frame, Margin, Rounding, Stroke};
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::helpers::BeaconSession;
-use super::NetworkAppState;
+use super::helpers::{BeaconSession, CommandEntry, format_timestamp};
 
 pub struct BeaconConsole;
 
@@ -12,8 +12,8 @@ impl BeaconConsole {
         BeaconConsole
     }
     
-    pub fn render(
-        &mut self,
+    // New simplified render method that doesn't take app_state
+    pub fn render_window(
         ctx: &Context,
         show_beacon_console: &mut bool,
         active_beacon: &mut Option<String>,
@@ -22,7 +22,8 @@ impl BeaconConsole {
         command_input_focus: &mut bool,
         console_scroll_to_bottom: &mut bool,
         beacon_sessions: &mut HashMap<String, BeaconSession>,
-        app_state: &mut NetworkAppState,
+        // Instead of taking app_state, we take a closure for command execution
+        execute_command_fn: impl Fn(&str, &str),
     ) {
         let mut open = true;
         
@@ -34,14 +35,14 @@ impl BeaconConsole {
                 .fill(Color32::from_rgb(15, 15, 15))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(70, 70, 70))))
             .show(ctx, |ui| {
-                self.render_professional_beacon_console(
+                Self::render_console_content(
                     ui, 
                     session, 
                     command_input, 
                     command_input_focus, 
                     console_scroll_to_bottom,
                     beacon_sessions,
-                    app_state,
+                    &execute_command_fn,
                 );
             });
         
@@ -51,15 +52,14 @@ impl BeaconConsole {
         }
     }
     
-    fn render_professional_beacon_console(
-        &mut self,
+    fn render_console_content(
         ui: &mut Ui,
         session: &BeaconSession,
         command_input: &mut String,
         command_input_focus: &mut bool,
         console_scroll_to_bottom: &mut bool,
         beacon_sessions: &mut HashMap<String, BeaconSession>,
-        app_state: &mut NetworkAppState,
+        execute_command_fn: &impl Fn(&str, &str),
     ) {
         // Colors
         let bg_dark = Color32::from_rgb(15, 15, 15);
@@ -85,18 +85,13 @@ impl BeaconConsole {
                     ui.label(RichText::new(format!("{}@{}", session.username, session.hostname)).color(accent_green).size(12.0));
                     
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(RichText::new("❌ Close").color(accent_red).size(11.0)).clicked() {
-                            app_state.show_beacon_console = false;
-                            app_state.active_beacon = None;
-                        }
+                        ui.label(RichText::new(format!("Commands: {}", session.command_history.len())).color(text_secondary).size(11.0));
                         
                         if ui.button(RichText::new("🗑 Clear").color(accent_yellow).size(11.0)).clicked() {
                             if let Some(mut_session) = beacon_sessions.get_mut(&session.agent_id) {
                                 mut_session.command_history.clear();
                             }
                         }
-                        
-                        ui.label(RichText::new(format!("Commands: {}", session.command_history.len())).color(text_secondary).size(11.0));
                     });
                 });
             });
@@ -243,7 +238,25 @@ impl BeaconConsole {
                         (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))) 
                         && !command_input.trim().is_empty() {
                         let command = command_input.clone();
-                        app_state.execute_command(&session.agent_id, &command);
+                        
+                        // Add command to history immediately
+                        let timestamp = format_timestamp(SystemTime::now());
+                        let cmd_entry = CommandEntry {
+                            timestamp,
+                            agent_id: session.agent_id.clone(),
+                            command: command.clone(),
+                            output: None,
+                            success: false,
+                            task_id: format!("task-{}-{}", session.agent_id, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()),
+                        };
+                        
+                        if let Some(mut_session) = beacon_sessions.get_mut(&session.agent_id) {
+                            mut_session.command_history.push(cmd_entry);
+                        }
+                        
+                        // Call the execution function
+                        execute_command_fn(&session.agent_id, &command);
+                        command_input.clear();
                     }
                 });
                 
@@ -271,7 +284,22 @@ impl BeaconConsole {
                                 .rounding(Rounding::same(3.0))
                                 .min_size([0.0, 20.0].into())
                         ).clicked() {
-                            app_state.execute_command(&session.agent_id, cmd);
+                            // Add command to history immediately
+                            let timestamp = format_timestamp(SystemTime::now());
+                            let cmd_entry = CommandEntry {
+                                timestamp,
+                                agent_id: session.agent_id.clone(),
+                                command: cmd.to_string(),
+                                output: None,
+                                success: false,
+                                task_id: format!("task-{}-{}", session.agent_id, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()),
+                            };
+                            
+                            if let Some(mut_session) = beacon_sessions.get_mut(&session.agent_id) {
+                                mut_session.command_history.push(cmd_entry);
+                            }
+                            
+                            execute_command_fn(&session.agent_id, cmd);
                         }
                     }
                 });
