@@ -1,4 +1,4 @@
-// src/network_app_state/beacon_console.rs - Beacon console component
+// src/network_app_state/beacon_console.rs - Fixed beacon console component
 use eframe::egui::{Context, Ui, Color32, RichText, ScrollArea, Button, TextEdit, TextStyle, Frame, Margin, Rounding, Stroke};
 use std::collections::HashMap;
 
@@ -12,7 +12,7 @@ impl BeaconConsole {
         BeaconConsole
     }
     
-    pub fn render<F>(
+    pub fn render(
         &mut self,
         ctx: &Context,
         show_beacon_console: &mut bool,
@@ -22,11 +22,8 @@ impl BeaconConsole {
         command_input_focus: &mut bool,
         console_scroll_to_bottom: &mut bool,
         beacon_sessions: &mut HashMap<String, BeaconSession>,
-        execute_command: F,
         app_state: &mut NetworkAppState,
-    ) where 
-        F: FnOnce(&mut NetworkAppState, &str, &str),
-    {
+    ) {
         let mut open = true;
         
         egui::Window::new("")
@@ -44,7 +41,6 @@ impl BeaconConsole {
                     command_input_focus, 
                     console_scroll_to_bottom,
                     beacon_sessions,
-                    execute_command,
                     app_state,
                 );
             });
@@ -55,7 +51,7 @@ impl BeaconConsole {
         }
     }
     
-    fn render_professional_beacon_console<F>(
+    fn render_professional_beacon_console(
         &mut self,
         ui: &mut Ui,
         session: &BeaconSession,
@@ -63,11 +59,8 @@ impl BeaconConsole {
         command_input_focus: &mut bool,
         console_scroll_to_bottom: &mut bool,
         beacon_sessions: &mut HashMap<String, BeaconSession>,
-        execute_command: F,
         app_state: &mut NetworkAppState,
-    ) where 
-        F: FnOnce(&mut NetworkAppState, &str, &str),
-    {
+    ) {
         // Colors
         let bg_dark = Color32::from_rgb(15, 15, 15);
         let bg_medium = Color32::from_rgb(25, 25, 25);
@@ -250,7 +243,7 @@ impl BeaconConsole {
                         (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))) 
                         && !command_input.trim().is_empty() {
                         let command = command_input.clone();
-                        execute_command(app_state, &session.agent_id, &command);
+                        app_state.execute_command(&session.agent_id, &command);
                     }
                 });
                 
@@ -278,7 +271,7 @@ impl BeaconConsole {
                                 .rounding(Rounding::same(3.0))
                                 .min_size([0.0, 20.0].into())
                         ).clicked() {
-                            execute_command(app_state, &session.agent_id, cmd);
+                            app_state.execute_command(&session.agent_id, cmd);
                         }
                     }
                 });

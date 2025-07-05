@@ -1,13 +1,12 @@
 // src/network_app_state/mod.rs - Main module file
 use eframe::egui::{Context, Color32, RichText, Frame, Margin};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 use std::collections::HashMap;
 use tokio::runtime::Runtime;
 
 use crate::client_api::{ClientApi, ServerMessage, ListenerInfo};
-use crate::listener::{ListenerConfig, ListenerType};
-use crate::agent::AgentConfig;
+use crate::listener::ListenerType;
 use crate::models::agent::Agent;
 
 // Sub-modules
@@ -20,7 +19,7 @@ mod helpers;
 
 // Re-export public components
 pub use beacon_console::BeaconConsole;
-pub use helpers::{CommandEntry, BeaconSession, format_time_ago, format_timestamp};
+pub use helpers::{CommandEntry, BeaconSession, format_timestamp};
 
 #[derive(PartialEq)]
 enum Tab {
@@ -32,63 +31,63 @@ enum Tab {
 }
 
 pub struct NetworkAppState {
-    client_api: Arc<Mutex<ClientApi>>,
-    runtime: Runtime,
+    pub client_api: Arc<Mutex<ClientApi>>,
+    pub runtime: Runtime,
     
     // UI state
-    current_tab: Tab,
+    pub current_tab: Tab,
     
     // Listener form state
-    listener_type: ListenerType,
-    listener_host: String,
-    listener_port: String,
+    pub listener_type: ListenerType,
+    pub listener_host: String,
+    pub listener_port: String,
     
     // Agent form state
-    agent_listener_url: String,
-    agent_format: String,
-    agent_architecture: String,
-    agent_sleep_time: String,
-    agent_jitter: String,
-    agent_injection: String,
-    agent_output_path: String,
+    pub agent_listener_url: String,
+    pub agent_format: String,
+    pub agent_architecture: String,
+    pub agent_sleep_time: String,
+    pub agent_jitter: String,
+    pub agent_injection: String,
+    pub agent_output_path: String,
     
     // BOF form state
-    bof_library: Vec<serde_json::Value>,
-    bof_stats: HashMap<String, u64>,
-    bof_search_results: Vec<serde_json::Value>,
-    bof_search_query: String,
-    selected_bof_name: Option<String>,
-    bof_args_input: String,
-    bof_target_agent: Option<String>,
-    show_bof_help: bool,
-    bof_help_text: String,
-    bof_help_name: String,
-    show_bof_library_tab: bool,
-    show_bof_execution_tab: bool,
-    show_bof_stats_tab: bool,
+    pub bof_library: Vec<serde_json::Value>,
+    pub bof_stats: HashMap<String, u64>,
+    pub bof_search_results: Vec<serde_json::Value>,
+    pub bof_search_query: String,
+    pub selected_bof_name: Option<String>,
+    pub bof_args_input: String,
+    pub bof_target_agent: Option<String>,
+    pub show_bof_help: bool,
+    pub bof_help_text: String,
+    pub bof_help_name: String,
+    pub show_bof_library_tab: bool,
+    pub show_bof_execution_tab: bool,
+    pub show_bof_stats_tab: bool,
     
     // Enhanced command execution state
-    command_input: String,
-    selected_agent: Option<String>,
-    beacon_sessions: HashMap<String, BeaconSession>,
-    active_beacon: Option<String>,
-    command_counter: u32,
+    pub command_input: String,
+    pub selected_agent: Option<String>,
+    pub beacon_sessions: HashMap<String, BeaconSession>,
+    pub active_beacon: Option<String>,
+    pub command_counter: u32,
     
     // Status messages
     status_message: String,
     status_time: Option<Instant>,
     
     // Data from server
-    listeners: Vec<ListenerInfo>,
-    agents: Vec<Agent>,
+    pub listeners: Vec<ListenerInfo>,
+    pub agents: Vec<Agent>,
     
     // Last server poll time
     last_poll: Instant,
     
     // UI state for beacon console
-    show_beacon_console: bool,
-    console_scroll_to_bottom: bool,
-    command_input_focus: bool,
+    pub show_beacon_console: bool,
+    pub console_scroll_to_bottom: bool,
+    pub command_input_focus: bool,
     
     // Sub-components
     beacon_console: BeaconConsole,
@@ -151,7 +150,7 @@ impl NetworkAppState {
         }
     }
     
-    fn set_status(&mut self, message: &str) {
+    pub fn set_status(&mut self, message: &str) {
         self.status_message = message.to_string();
         self.status_time = Some(Instant::now());
     }
@@ -334,7 +333,7 @@ impl NetworkAppState {
         self.command_input_focus = true;
     }
     
-    fn open_beacon_console(&mut self, agent_id: &str) {
+    pub fn open_beacon_console(&mut self, agent_id: &str) {
         self.active_beacon = Some(agent_id.to_string());
         self.show_beacon_console = true;
         self.selected_agent = Some(agent_id.to_string());
@@ -370,9 +369,6 @@ impl eframe::App for NetworkAppState {
                         &mut self.command_input_focus,
                         &mut self.console_scroll_to_bottom,
                         &mut self.beacon_sessions,
-                        |app_state, agent_id, command| {
-                            app_state.execute_command(agent_id, command);
-                        },
                         self
                     );
                 }
