@@ -1,7 +1,7 @@
-// src/bof/coff_loader.rs - COFF Object File Loader for BOF Execution
+// src/bof/coff_loader.rs - COFF Object File Loader for BOF Execution (FIXED)
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_void, c_int, c_long};
+use std::os::raw::{c_char, c_void, c_int};
 use std::ptr;
 use std::mem;
 
@@ -55,8 +55,8 @@ pub struct CoffRelocation {
     pub relocation_type: u16,
 }
 
-// Beacon API function signatures
-pub type BeaconPrintfFn = unsafe extern "C" fn(c_int, *const c_char, ...);
+// Beacon API function signatures (FIXED - removed variadic function)
+pub type BeaconPrintfFn = unsafe extern "C" fn(c_int, *const c_char);
 pub type BeaconOutputFn = unsafe extern "C" fn(c_int, *const c_char, c_int);
 pub type BeaconDataParseFn = unsafe extern "C" fn(*mut DataParser, *const c_char, c_int);
 pub type BeaconDataIntFn = unsafe extern "C" fn(*mut DataParser) -> c_int;
@@ -458,7 +458,7 @@ impl CoffLoader {
         // Resolve symbol based on section and type
         if symbol.section_number > 0 {
             // Symbol in a section - resolve to loaded section base + value
-            let section_index = (symbol.section_number - 1) as usize;
+            let _section_index = (symbol.section_number - 1) as usize;
             // This is simplified - in a real implementation, you'd need to track section mappings
             Ok(symbol.value as usize)
         } else if symbol.section_number == 0 {
@@ -595,15 +595,15 @@ impl BeaconApi {
     }
 }
 
-// Beacon API implementation functions
-unsafe extern "C" fn beacon_printf_impl(msg_type: c_int, format: *const c_char, ...) {
+// Beacon API implementation functions (FIXED - removed variadic args)
+unsafe extern "C" fn beacon_printf_impl(msg_type: c_int, format: *const c_char) {
     if EXECUTION_CONTEXT.is_null() {
         return;
     }
 
     let context = &mut *EXECUTION_CONTEXT;
     
-    // Simple implementation - in reality you'd handle variadic args properly
+    // Simple implementation - no variadic args
     if !format.is_null() {
         let format_str = CStr::from_ptr(format).to_string_lossy();
         let output = format!("[{}] {}\n", msg_type, format_str);

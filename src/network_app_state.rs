@@ -621,7 +621,7 @@ impl NetworkAppState {
 
     fn get_bof_help(&mut self, bof_name: &str) {
         let client_api_clone = self.client_api.clone();
-        let name = bof_name.to_string();
+        let name = bof_name.to_string(); // Clone the string to avoid borrowing issues
         
         self.runtime.spawn_blocking(move || {
             let runtime = Runtime::new().unwrap();
@@ -1170,108 +1170,112 @@ impl NetworkAppState {
 
     // BOF rendering methods
     fn render_bof_library(&mut self, ui: &mut Ui, bg_medium: Color32, accent_blue: Color32, accent_green: Color32, 
-                         accent_red: Color32, accent_yellow: Color32, text_primary: Color32, text_secondary: Color32) {
-        
-        // Search controls
-        Frame::none()
-            .fill(bg_medium)
-            .inner_margin(Margin::same(8.0))
-            .rounding(Rounding::same(4.0))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("🔍 Search BOFs:").color(text_primary));
-                    ui.text_edit_singleline(&mut self.bof_search_query);
-                    
-                    if ui.add(Button::new(RichText::new("Search").color(Color32::WHITE))
-                        .fill(accent_blue)).clicked() {
-                        self.search_bofs();
-                    }
-                    
-                    if ui.add(Button::new(RichText::new("🔄 Refresh").color(Color32::WHITE))
-                        .fill(accent_green)).clicked() {
-                        self.refresh_bof_library();
-                    }
-                });
-            });
+        accent_red: Color32, accent_yellow: Color32, text_primary: Color32, text_secondary: Color32) {
 
-        ui.add_space(5.0);
+// Search controls
+Frame::none()
+.fill(bg_medium)
+.inner_margin(Margin::same(8.0))
+.rounding(Rounding::same(4.0))
+.show(ui, |ui| {
+ui.horizontal(|ui| {
+   ui.label(RichText::new("🔍 Search BOFs:").color(text_primary));
+   ui.text_edit_singleline(&mut self.bof_search_query);
+   
+   if ui.add(Button::new(RichText::new("Search").color(Color32::WHITE))
+       .fill(accent_blue)).clicked() {
+       self.search_bofs();
+   }
+   
+   if ui.add(Button::new(RichText::new("🔄 Refresh").color(Color32::WHITE))
+       .fill(accent_green)).clicked() {
+       self.refresh_bof_library();
+   }
+});
+});
 
-        // BOF library list
-        let bofs_to_display = if self.bof_search_query.is_empty() || self.bof_search_results.is_empty() {
-            &self.bof_library
-        } else {
-            &self.bof_search_results
-        };
+ui.add_space(5.0);
 
-        if bofs_to_display.is_empty() {
-            ui.vertical_centered(|ui| {
-                ui.add_space(30.0);
-                ui.label(RichText::new("📭 No BOFs available")
-                    .color(text_secondary).size(14.0));
-                ui.label(RichText::new("Click Refresh to load BOF library from server")
-                    .color(text_secondary).size(12.0));
-                ui.add_space(30.0);
-            });
-        } else {
-            ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-                for bof in bofs_to_display {
-                    let name = bof.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown");
-                    let description = bof.get("description").and_then(|v| v.as_str()).unwrap_or("No description");
-                    let author = bof.get("author").and_then(|v| v.as_str()).unwrap_or("Unknown");
-                    let opsec_level = bof.get("opsec_level").and_then(|v| v.as_str()).unwrap_or("Standard");
-                    
-                    let is_selected = self.selected_bof_name.as_ref() == Some(&name.to_string());
-                    
-                    Frame::none()
-                        .fill(if is_selected { bg_medium } else { Color32::from_rgb(20, 20, 20) })
-                        .inner_margin(Margin::same(8.0))
-                        .rounding(Rounding::same(4.0))
-                        .stroke(if is_selected { 
-                            Stroke::new(1.0, accent_blue) 
-                        } else { 
-                            Stroke::new(0.5, Color32::from_rgb(60, 60, 60)) 
-                        })
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(name).color(accent_blue).size(14.0).strong());
-                                        
-                                        let (opsec_icon, opsec_color) = match opsec_level {
-                                            "Stealth" => ("🟢", accent_green),
-                                            "Careful" => ("🟡", accent_yellow),
-                                            "Standard" => ("🟠", accent_yellow),
-                                            "Loud" => ("🔴", accent_red),
-                                            _ => ("⚪", text_secondary),
-                                        };
-                                        ui.label(RichText::new(opsec_icon).color(opsec_color));
-                                    });
-                                    
-                                    ui.label(RichText::new(description).color(text_secondary).size(11.0));
-                                    ui.label(RichText::new(format!("by {}", author)).color(text_secondary).size(10.0));
-                                });
-                                
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.add(Button::new(RichText::new("🚀 Execute").color(Color32::WHITE))
-                                        .fill(accent_green)).clicked() {
-                                        self.selected_bof_name = Some(name.to_string());
-                                        self.show_bof_execution_tab = true;
-                                        self.show_bof_library_tab = false;
-                                    }
-                                    
-                                    if ui.add(Button::new(RichText::new("ℹ️ Help").color(Color32::WHITE))
-                                        .fill(accent_blue)).clicked() {
-                                        self.get_bof_help(name);
-                                    }
-                                });
-                            });
-                        });
+// BOF library list
+let bofs_to_display = if self.bof_search_query.is_empty() || self.bof_search_results.is_empty() {
+&self.bof_library
+} else {
+&self.bof_search_results
+};
 
-                    ui.add_space(3.0);
-                }
-            });
-        }
-    }
+if bofs_to_display.is_empty() {
+ui.vertical_centered(|ui| {
+ui.add_space(30.0);
+ui.label(RichText::new("📭 No BOFs available")
+   .color(text_secondary).size(14.0));
+ui.label(RichText::new("Click Refresh to load BOF library from server")
+   .color(text_secondary).size(12.0));
+ui.add_space(30.0);
+});
+} else {
+// Clone the data to avoid borrowing issues
+let bofs_display_data: Vec<_> = bofs_to_display.iter().map(|bof| {
+let name = bof.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+let description = bof.get("description").and_then(|v| v.as_str()).unwrap_or("No description").to_string();
+let author = bof.get("author").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+let opsec_level = bof.get("opsec_level").and_then(|v| v.as_str()).unwrap_or("Standard").to_string();
+let is_selected = self.selected_bof_name.as_ref() == Some(&name);
+
+(name, description, author, opsec_level, is_selected)
+}).collect();
+
+ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+for (name, description, author, opsec_level, is_selected) in bofs_display_data {
+   Frame::none()
+       .fill(if is_selected { bg_medium } else { Color32::from_rgb(20, 20, 20) })
+       .inner_margin(Margin::same(8.0))
+       .rounding(Rounding::same(4.0))
+       .stroke(if is_selected { 
+           Stroke::new(1.0, accent_blue) 
+       } else { 
+           Stroke::new(0.5, Color32::from_rgb(60, 60, 60)) 
+       })
+       .show(ui, |ui| {
+           ui.horizontal(|ui| {
+               ui.vertical(|ui| {
+                   ui.horizontal(|ui| {
+                       ui.label(RichText::new(&name).color(accent_blue).size(14.0).strong());
+                       
+                       let (opsec_icon, opsec_color) = match opsec_level.as_str() {
+                           "Stealth" => ("🟢", accent_green),
+                           "Careful" => ("🟡", accent_yellow),
+                           "Standard" => ("🟠", accent_yellow),
+                           "Loud" => ("🔴", accent_red),
+                           _ => ("⚪", text_secondary),
+                       };
+                       ui.label(RichText::new(opsec_icon).color(opsec_color));
+                   });
+                   
+                   ui.label(RichText::new(&description).color(text_secondary).size(11.0));
+                   ui.label(RichText::new(format!("by {}", author)).color(text_secondary).size(10.0));
+               });
+               
+               ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                   if ui.add(Button::new(RichText::new("🚀 Execute").color(Color32::WHITE))
+                       .fill(accent_green)).clicked() {
+                       self.selected_bof_name = Some(name.clone());
+                       self.show_bof_execution_tab = true;
+                       self.show_bof_library_tab = false;
+                   }
+                   
+                   if ui.add(Button::new(RichText::new("ℹ️ Help").color(Color32::WHITE))
+                       .fill(accent_blue)).clicked() {
+                       self.get_bof_help(&name);
+                   }
+               });
+           });
+       });
+
+   ui.add_space(3.0);
+}
+});
+}
+}
 
     fn render_bof_execution(&mut self, ui: &mut Ui, bg_medium: Color32, accent_blue: Color32, accent_green: Color32, 
                            accent_red: Color32, text_primary: Color32) {

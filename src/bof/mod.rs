@@ -1,8 +1,8 @@
-// src/bof/mod.rs - Complete BOF execution system
+// src/bof/mod.rs - Complete BOF execution system (FIXED)
 use std::io;
 use std::path::Path;
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH, Instant};
+use std::time::Instant;
 use std::fs;
 use serde::{Serialize, Deserialize};
 
@@ -211,7 +211,7 @@ impl BofExecutor {
                 if !args.trim().is_empty() {
                     let parts: Vec<&str> = args.split_whitespace().collect();
                     bof_args.add_int(parts.len() as i32); // Number of arguments
-                    for part in parts {
+                    for part in &parts {  // Fixed: iterate over references
                         bof_args.add_string(part);
                     }
                     println!("📋 Generic args: {} arguments", parts.len());

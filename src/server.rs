@@ -1,4 +1,4 @@
-// src/server.rs - Complete BOF Integration (Fixed)
+// src/server.rs - Complete BOF Integration (FIXED - removed unused imports)
 use std::sync::{Arc, Mutex};
 use std::net::SocketAddr;
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ mod utils;
 
 use crate::listener::{Listener, ListenerConfig, get_all_agents, add_task_for_agent, set_result_callback};
 use agent::{AgentGenerator, AgentConfig};
-use bof::{BofManager, BofCommandParser, BofMetadata};
+use bof::{BofManager, BofCommandParser};
 use models::agent::Agent;
 
 // Command-line arguments
