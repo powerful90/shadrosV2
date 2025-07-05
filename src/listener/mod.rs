@@ -1,4 +1,4 @@
-// src/listener/mod.rs - Complete BOF Integration with Agent Task System
+// src/listener/mod.rs - Complete BOF Integration with Agent Task System (Fixed)
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -11,7 +11,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use lazy_static::lazy_static;
 
 use crate::models::agent::Agent;
-use crate::bof::integration::BofParser;
+
+// Simple BOF parser for command parsing
+pub struct BofParser;
+
+impl BofParser {
+    /// Parse BOF command from input string
+    pub fn parse_bof_command(command: &str) -> Option<(String, String)> {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        
+        if parts.len() >= 2 && parts[0] == "bof" {
+            let bof_name = parts[1].to_string();
+            let args = if parts.len() > 2 {
+                parts[2..].join(" ")
+            } else {
+                String::new()
+            };
+            
+            Some((bof_name, args))
+        } else {
+            None
+        }
+    }
+}
 
 // Define messages for communication
 enum ListenerMessage {
@@ -327,7 +349,7 @@ pub fn get_agent_directory(agent_id: &str) -> String {
         .unwrap_or_else(|| "C:\\".to_string())
 }
 
-// BOF-specific statistics and management
+// BOF-specific statistics and management (fixed function names)
 pub fn get_bof_execution_stats(bof_name: &str) -> Option<BofExecutionStats> {
     BOF_EXECUTION_STATS.lock().unwrap().get(bof_name).cloned()
 }
@@ -697,6 +719,10 @@ async fn handle_bof_specific_result(
                 println!("   Exit Code: {}", bof_result.exit_code);
                 
                 // Convert to standard task result for compatibility
+                let stdout_len = bof_result.stdout.len();
+                let stderr_empty = bof_result.stderr.is_empty();
+                let stderr_clone = bof_result.stderr.clone();
+                
                 let task_result = TaskResult {
                     id: bof_result.task_id.clone(),
                     command: format!("bof {} {}", bof_result.bof_name, bof_result.args),
@@ -704,13 +730,13 @@ async fn handle_bof_specific_result(
                     success: bof_result.exit_code == 0,
                     execution_time_ms: bof_result.execution_time_ms,
                     current_directory: bof_result.current_directory,
-                    error_details: if bof_result.stderr.is_empty() { None } else { Some(bof_result.stderr) },
+                    error_details: if stderr_empty { None } else { Some(stderr_clone.clone()) },
                     is_bof_result: true,
                     bof_metadata: Some(BofResultMetadata {
                         bof_name: bof_result.bof_name.clone(),
                         exit_code: bof_result.exit_code,
-                        output_size: bof_result.stdout.len(),
-                        stderr_output: if bof_result.stderr.is_empty() { None } else { Some(bof_result.stderr) },
+                        output_size: stdout_len,
+                        stderr_output: if stderr_empty { None } else { Some(stderr_clone) },
                     }),
                 };
                 
@@ -861,13 +887,3 @@ pub fn process_agent_command(agent_id: &str, command: &str) -> Option<String> {
         None
     }
 }
-
-// Export enhanced functions for use by the C2 server
-pub use {
-    get_bof_execution_stats,
-    get_all_bof_stats,
-    get_bof_task_statistics,
-    clear_bof_statistics,
-    get_agent_bof_history,
-    process_agent_command,
-};

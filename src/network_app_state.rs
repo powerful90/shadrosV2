@@ -1,17 +1,13 @@
-// Enhanced NetworkAppState with improved beacon console design
 use eframe::egui::{self, Context, Ui, Color32, RichText, ScrollArea, Button, TextEdit, TextStyle, Frame, Margin, Rounding, Stroke};
-// Removed unused imports: TableBuilder, Column
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use tokio::runtime::Runtime;
 
-use crate::client_api::{ClientApi, ServerMessage, ListenerInfo};
+use crate::client_api::{ClientApi, ServerMessage, ListenerInfo, parse_bof_command};
 use crate::listener::{ListenerConfig, ListenerType};
 use crate::agent::AgentConfig;
 use crate::models::agent::Agent;
-
-use std::collections::HashMap;
 
 #[derive(PartialEq)]
 enum Tab {
@@ -63,9 +59,19 @@ pub struct NetworkAppState {
     agent_output_path: String,
     
     // BOF form state
-    bof_file_path: String,
-    bof_args: String,
-    bof_target: String,
+    bof_library: Vec<serde_json::Value>,
+    bof_stats: HashMap<String, u64>,
+    bof_search_results: Vec<serde_json::Value>,
+    bof_search_query: String,
+    selected_bof_name: Option<String>,
+    bof_args_input: String,
+    bof_target_agent: Option<String>,
+    show_bof_help: bool,
+    bof_help_text: String,
+    bof_help_name: String,
+    show_bof_library_tab: bool,
+    show_bof_execution_tab: bool,
+    show_bof_stats_tab: bool,
     
     // Enhanced command execution state
     command_input: String,
@@ -111,9 +117,20 @@ impl NetworkAppState {
             agent_injection: "self".to_string(),
             agent_output_path: "agent.exe".to_string(),
             
-            bof_file_path: "".to_string(),
-            bof_args: "".to_string(),
-            bof_target: "all".to_string(),
+            // BOF field initializations
+            bof_library: Vec::new(),
+            bof_stats: HashMap::new(),
+            bof_search_results: Vec::new(),
+            bof_search_query: String::new(),
+            selected_bof_name: None,
+            bof_args_input: String::new(),
+            bof_target_agent: None,
+            show_bof_help: false,
+            bof_help_text: String::new(),
+            bof_help_name: String::new(),
+            show_bof_library_tab: true,
+            show_bof_execution_tab: false,
+            show_bof_stats_tab: false,
             
             command_input: String::new(),
             selected_agent: None,
@@ -139,6 +156,31 @@ impl NetworkAppState {
         self.status_message = message.to_string();
         self.status_time = Some(Instant::now());
     }
+
+    // Handle BOF-related server messages
+    fn handle_bof_messages(&mut self, msg: &ServerMessage) {
+        match msg {
+            ServerMessage::BofLibrary { bofs } => {
+                self.bof_library = bofs.clone();
+                println!("📚 Received BOF library with {} BOFs", bofs.len());
+            },
+            ServerMessage::BofStats { stats } => {
+                self.bof_stats = stats.clone();
+                println!("📊 Received BOF statistics");
+            },
+            ServerMessage::BofHelp { bof_name, help_text } => {
+                self.bof_help_name = bof_name.clone();
+                self.bof_help_text = help_text.clone();
+                self.show_bof_help = true;
+                println!("📖 Received help for BOF: {}", bof_name);
+            },
+            ServerMessage::BofSearchResults { results } => {
+                self.bof_search_results = results.clone();
+                println!("🔍 Received {} BOF search results", results.len());
+            },
+            _ => {} // Handle other messages normally
+        }
+    }
     
     fn poll_server(&mut self) {
         let client_api_clone = self.client_api.clone();
@@ -146,20 +188,9 @@ impl NetworkAppState {
         
         if let Some(mut client) = client_opt {
             while let Some(msg) = client.try_receive_message() {
-                // Debug log all received messages
-                match &msg {
-                    ServerMessage::CommandResult { agent_id, task_id, output, success, .. } => {
-                        println!("📥 CLIENT: Received CommandResult");
-                        println!("   Agent: {}", agent_id);
-                        println!("   Task: {}", task_id);
-                        println!("   Success: {}", success);
-                        println!("   Output length: {}", output.len());
-                    },
-                    _ => {
-                        println!("📥 CLIENT: Received message: {:?}", std::mem::discriminant(&msg));
-                    }
-                }
-                
+                // Handle BOF messages
+                self.handle_bof_messages(&msg);
+
                 match msg {
                     ServerMessage::ListenersUpdate { listeners } => {
                         self.listeners = listeners;
@@ -181,19 +212,13 @@ impl NetworkAppState {
                         }
                     },
                     ServerMessage::CommandResult { agent_id, task_id, command: _, output, success } => {
-                        println!("📥 CLIENT: Processing CommandResult for agent {}", agent_id);
-                        
                         // Find and update the command entry
                         if let Some(session) = self.beacon_sessions.get_mut(&agent_id) {
-                            println!("🔍 CLIENT: Found session for agent: {}", agent_id);
-                            println!("🔍 CLIENT: Session has {} commands", session.command_history.len());
-                            
                             let mut updated = false;
                             
-                            // Strategy 1: Find by exact task_id match
+                            // Find by exact task_id match
                             for cmd_entry in session.command_history.iter_mut().rev() {
                                 if cmd_entry.task_id == task_id {
-                                    println!("✅ CLIENT: Found exact task_id match, updating");
                                     cmd_entry.output = Some(output.clone());
                                     cmd_entry.success = success;
                                     updated = true;
@@ -201,51 +226,33 @@ impl NetworkAppState {
                                 }
                             }
                             
-                            // Strategy 2: Find most recent pending command if no exact match
+                            // Find most recent pending command if no exact match
                             if !updated {
-                                println!("⚠️ CLIENT: No exact task_id match, looking for pending command");
                                 for cmd_entry in session.command_history.iter_mut().rev() {
                                     if cmd_entry.output.is_none() {
-                                        println!("✅ CLIENT: Found pending command, updating");
                                         cmd_entry.output = Some(output.clone());
                                         cmd_entry.success = success;
-                                        cmd_entry.task_id = task_id.clone(); // Update task_id
+                                        cmd_entry.task_id = task_id.clone();
                                         updated = true;
                                         break;
                                     }
                                 }
                             }
                             
-                            // Strategy 3: Add as new entry if still not found
+                            // Add as new entry if still not found
                             if !updated {
-                                println!("⚠️ CLIENT: No matching command found, creating new entry");
                                 let cmd_entry = CommandEntry {
                                     timestamp: format_timestamp(SystemTime::now()),
                                     agent_id: agent_id.clone(),
-                                    command: "completed".to_string(), // We don't have the original command
+                                    command: "completed".to_string(),
                                     output: Some(output.clone()),
                                     success,
                                     task_id: task_id.clone(),
                                 };
                                 session.command_history.push(cmd_entry);
-                                updated = true;
                             }
                             
-                            if updated {
-                                println!("✅ CLIENT: Command result updated successfully");
-                                self.console_scroll_to_bottom = true;
-                            }
-                            
-                            // Debug: Print current command history
-                            println!("🔍 CLIENT: Current command history for {}:", agent_id);
-                            for (i, cmd) in session.command_history.iter().enumerate() {
-                                println!("   {}: {} -> {}", i, cmd.command, 
-                                    if cmd.output.is_some() { "HAS OUTPUT" } else { "PENDING" });
-                            }
-                        } else {
-                            println!("❌ CLIENT: No session found for agent: {}", agent_id);
-                            println!("❌ CLIENT: Available sessions: {:?}", 
-                                self.beacon_sessions.keys().collect::<Vec<_>>());
+                            self.console_scroll_to_bottom = true;
                         }
                         
                         // Update status
@@ -293,13 +300,13 @@ impl NetworkAppState {
         self.command_counter += 1;
         let task_id = format!("task-{}-{}", agent_id, self.command_counter);
         
-        // Add command to history immediately (output will be updated when result comes back)
+        // Add command to history immediately
         let timestamp = format_timestamp(SystemTime::now());
         let cmd_entry = CommandEntry {
-            timestamp: timestamp.clone(),
+            timestamp,
             agent_id: agent_id.to_string(),
             command: command.to_string(),
-            output: None, // Will be filled when real result comes back
+            output: None,
             success: false,
             task_id: task_id.clone(),
         };
@@ -317,12 +324,7 @@ impl NetworkAppState {
             let runtime = Runtime::new().unwrap();
             runtime.block_on(async {
                 if let Ok(client) = client_api_clone.try_lock() {
-                    match client.execute_command(&agent_id_clone, &command_clone).await {
-                        Ok(_) => {},
-                        Err(e) => {
-                            eprintln!("Failed to execute command: {}", e);
-                        }
-                    }
+                    let _ = client.execute_command(&agent_id_clone, &command_clone).await;
                 }
             });
         });
@@ -330,7 +332,7 @@ impl NetworkAppState {
         self.set_status(&format!("📤 Command '{}' sent to beacon", command));
         self.command_input.clear();
         self.console_scroll_to_bottom = true;
-        self.command_input_focus = true; // Keep focus on input
+        self.command_input_focus = true;
     }
     
     fn open_beacon_console(&mut self, agent_id: &str) {
@@ -340,7 +342,7 @@ impl NetworkAppState {
         self.command_input_focus = true;
     }
     
-    // Enhanced beacon console rendering with professional design
+    // Beacon console rendering
     fn render_beacon_console(&mut self, ctx: &Context) {
         let mut open = true;
         
@@ -368,10 +370,9 @@ impl NetworkAppState {
     }
     
     fn render_professional_beacon_console(&mut self, ui: &mut Ui, session: &BeaconSession) {
-        // Custom dark theme colors
+        // Colors
         let bg_dark = Color32::from_rgb(15, 15, 15);
         let bg_medium = Color32::from_rgb(25, 25, 25);
-        let bg_light = Color32::from_rgb(35, 35, 35);
         let accent_blue = Color32::from_rgb(100, 149, 237);
         let accent_green = Color32::from_rgb(152, 251, 152);
         let accent_red = Color32::from_rgb(255, 105, 97);
@@ -379,33 +380,18 @@ impl NetworkAppState {
         let text_primary = Color32::from_rgb(220, 220, 220);
         let text_secondary = Color32::from_rgb(170, 170, 170);
         
-        // Header with beacon info
+        // Header
         Frame::none()
             .fill(bg_medium)
             .inner_margin(Margin::same(10.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // Beacon status indicator
                     ui.label(RichText::new("🔴").size(14.0));
-                    
-                    // Beacon info
-                    ui.label(RichText::new("BEACON")
-                        .color(accent_blue)
-                        .size(14.0)
-                        .strong());
-                    
+                    ui.label(RichText::new("BEACON").color(accent_blue).size(14.0).strong());
                     ui.separator();
-                    
-                    ui.label(RichText::new(&session.agent_id)
-                        .color(text_primary)
-                        .monospace()
-                        .size(12.0));
-                    
+                    ui.label(RichText::new(&session.agent_id).color(text_primary).monospace().size(12.0));
                     ui.separator();
-                    
-                    ui.label(RichText::new(format!("{}@{}", session.username, session.hostname))
-                        .color(accent_green)
-                        .size(12.0));
+                    ui.label(RichText::new(format!("{}@{}", session.username, session.hostname)).color(accent_green).size(12.0));
                     
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(RichText::new("❌ Close").color(accent_red).size(11.0)).clicked() {
@@ -419,17 +405,15 @@ impl NetworkAppState {
                             }
                         }
                         
-                        ui.label(RichText::new(format!("Commands: {}", session.command_history.len()))
-                            .color(text_secondary)
-                            .size(11.0));
+                        ui.label(RichText::new(format!("Commands: {}", session.command_history.len())).color(text_secondary).size(11.0));
                     });
                 });
             });
         
         ui.separator();
         
-        // Main console area with terminal-like appearance
-        let available_height = ui.available_height() - 100.0; // Reserve space for input and buttons
+        // Console area
+        let available_height = ui.available_height() - 100.0;
         
         Frame::none()
             .fill(bg_dark)
@@ -442,63 +426,44 @@ impl NetworkAppState {
                     .show(ui, |ui| {
                         ui.style_mut().override_text_style = Some(TextStyle::Monospace);
                         
-                        // Welcome message if no commands yet
                         if session.command_history.is_empty() {
                             ui.vertical_centered(|ui| {
                                 ui.add_space(20.0);
-                                ui.label(RichText::new("🚀 Beacon Console Ready")
-                                    .color(accent_blue)
-                                    .size(16.0)
-                                    .strong());
-                                ui.label(RichText::new(format!("Connected to {}@{}", session.username, session.hostname))
-                                    .color(text_secondary)
-                                    .size(12.0));
-                                ui.label(RichText::new("Type 'help' for available commands")
-                                    .color(text_secondary)
-                                    .size(11.0));
+                                ui.label(RichText::new("🚀 Beacon Console Ready").color(accent_blue).size(16.0).strong());
+                                ui.label(RichText::new(format!("Connected to {}@{}", session.username, session.hostname)).color(text_secondary).size(12.0));
+                                ui.label(RichText::new("Type 'help' for available commands").color(text_secondary).size(11.0));
                                 ui.add_space(20.0);
                             });
                         }
                         
-                        // Command history with improved styling
+                        // Command history
                         for (index, cmd_entry) in session.command_history.iter().enumerate() {
-                            // Add spacing between commands
                             if index > 0 {
                                 ui.add_space(8.0);
                             }
                             
-                            // Command prompt line with enhanced styling
+                            // Command prompt
                             Frame::none()
                                 .fill(bg_medium)
                                 .inner_margin(Margin::symmetric(8.0, 4.0))
                                 .rounding(Rounding::same(4.0))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.label(RichText::new("❯")
-                                            .color(accent_blue)
-                                            .size(14.0)
-                                            .strong());
-                                        
-                                        ui.label(RichText::new(&cmd_entry.command)
-                                            .color(text_primary)
-                                            .size(12.0)
-                                            .monospace());
+                                        ui.label(RichText::new("❯").color(accent_blue).size(14.0).strong());
+                                        ui.label(RichText::new(&cmd_entry.command).color(text_primary).size(12.0).monospace());
                                         
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.label(RichText::new(&cmd_entry.timestamp)
-                                                .color(text_secondary)
-                                                .size(10.0));
+                                            ui.label(RichText::new(&cmd_entry.timestamp).color(text_secondary).size(10.0));
                                         });
                                     });
                                 });
                             
-                            // Command output with status-based coloring
+                            // Command output
                             if let Some(output) = &cmd_entry.output {
                                 Frame::none()
                                     .fill(bg_dark)
                                     .inner_margin(Margin::symmetric(12.0, 6.0))
                                     .show(ui, |ui| {
-                                        // Status indicator
                                         let (status_icon, status_color) = if cmd_entry.success {
                                             ("✅", accent_green)
                                         } else {
@@ -507,13 +472,9 @@ impl NetworkAppState {
                                         
                                         ui.horizontal(|ui| {
                                             ui.label(RichText::new(status_icon).size(12.0));
-                                            ui.label(RichText::new("Output:")
-                                                .color(status_color)
-                                                .size(11.0)
-                                                .strong());
+                                            ui.label(RichText::new("Output:").color(status_color).size(11.0).strong());
                                         });
                                         
-                                        // Output text with syntax highlighting
                                         for line in output.lines() {
                                             if line.trim().is_empty() {
                                                 ui.add_space(2.0);
@@ -521,7 +482,6 @@ impl NetworkAppState {
                                             }
                                             
                                             let line_color = if cmd_entry.success {
-                                                // Highlight different types of output
                                                 if line.contains("Error") || line.contains("error") || line.contains("ERROR") {
                                                     accent_red
                                                 } else if line.contains("Success") || line.contains("success") || line.contains("OK") {
@@ -535,26 +495,18 @@ impl NetworkAppState {
                                                 accent_red
                                             };
                                             
-                                            ui.label(RichText::new(line)
-                                                .color(line_color)
-                                                .size(11.0)
-                                                .monospace());
+                                            ui.label(RichText::new(line).color(line_color).size(11.0).monospace());
                                         }
                                     });
                             } else {
-                                // Pending command indicator
+                                // Pending command
                                 Frame::none()
-                                    .fill(bg_light)
+                                    .fill(Color32::from_rgb(35, 35, 35))
                                     .inner_margin(Margin::symmetric(12.0, 4.0))
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            ui.label(RichText::new("⏳")
-                                                .color(accent_yellow)
-                                                .size(12.0));
-                                            ui.label(RichText::new("Executing command...")
-                                                .color(accent_yellow)
-                                                .size(11.0)
-                                                .italics());
+                                            ui.label(RichText::new("⏳").color(accent_yellow).size(12.0));
+                                            ui.label(RichText::new("Executing command...").color(accent_yellow).size(11.0).italics());
                                         });
                                     });
                             }
@@ -569,16 +521,13 @@ impl NetworkAppState {
         
         ui.separator();
         
-        // Command input area with enhanced styling
+        // Command input
         Frame::none()
             .fill(bg_medium)
             .inner_margin(Margin::same(8.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("❯")
-                        .color(accent_blue)
-                        .size(16.0)
-                        .strong());
+                    ui.label(RichText::new("❯").color(accent_blue).size(16.0).strong());
                     
                     let command_input = TextEdit::singleline(&mut self.command_input)
                         .desired_width(ui.available_width() - 100.0)
@@ -588,7 +537,6 @@ impl NetworkAppState {
                     
                     let response = ui.add(command_input);
                     
-                    // Auto-focus on input
                     if self.command_input_focus {
                         response.request_focus();
                         self.command_input_focus = false;
@@ -610,11 +558,9 @@ impl NetworkAppState {
                 
                 ui.add_space(4.0);
                 
-                // Quick command buttons with professional styling
+                // Quick commands
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Quick Commands:")
-                        .color(text_secondary)
-                        .size(11.0));
+                    ui.label(RichText::new("Quick Commands:").color(text_secondary).size(11.0));
                     
                     let quick_commands = vec![
                         ("help", "help", accent_blue),
@@ -640,6 +586,73 @@ impl NetworkAppState {
                 });
             });
     }
+
+    // Helper methods for BOF
+    fn search_bofs(&mut self) {
+        if !self.bof_search_query.trim().is_empty() {
+            let client_api_clone = self.client_api.clone();
+            let query = self.bof_search_query.clone();
+            
+            self.runtime.spawn_blocking(move || {
+                let runtime = Runtime::new().unwrap();
+                runtime.block_on(async {
+                    if let Ok(client) = client_api_clone.try_lock() {
+                        let _ = client.search_bofs(&query).await;
+                    }
+                });
+            });
+        }
+    }
+
+    fn refresh_bof_library(&mut self) {
+        let client_api_clone = self.client_api.clone();
+        
+        self.runtime.spawn_blocking(move || {
+            let runtime = Runtime::new().unwrap();
+            runtime.block_on(async {
+                if let Ok(client) = client_api_clone.try_lock() {
+                    let _ = client.get_bof_library().await;
+                }
+            });
+        });
+        
+        self.set_status("🔄 Refreshing BOF library...");
+    }
+
+    fn get_bof_help(&mut self, bof_name: &str) {
+        let client_api_clone = self.client_api.clone();
+        let name = bof_name.to_string();
+        
+        self.runtime.spawn_blocking(move || {
+            let runtime = Runtime::new().unwrap();
+            runtime.block_on(async {
+                if let Ok(client) = client_api_clone.try_lock() {
+                    let _ = client.get_bof_help(&name).await;
+                }
+            });
+        });
+    }
+
+    fn execute_selected_bof(&mut self) {
+        if let (Some(ref bof_name), Some(ref target)) = (&self.selected_bof_name, &self.bof_target_agent) {
+            let client_api_clone = self.client_api.clone();
+            let name = bof_name.clone();
+            let args = self.bof_args_input.clone();
+            let target_clone = target.clone();
+            
+            self.runtime.spawn_blocking(move || {
+                let runtime = Runtime::new().unwrap();
+                runtime.block_on(async {
+                    if let Ok(client) = client_api_clone.try_lock() {
+                        let _ = client.execute_bof_by_name(&name, &args, &target_clone).await;
+                    }
+                });
+            });
+            
+            self.set_status(&format!("🚀 Executing BOF '{}' on target '{}'", bof_name, target));
+            self.bof_args_input.clear();
+        }
+    }
     
     fn add_listener(&mut self) {
         let port = self.listener_port.parse::<u16>().unwrap_or(8080);
@@ -656,12 +669,7 @@ impl NetworkAppState {
             let runtime = Runtime::new().unwrap();
             runtime.block_on(async {
                 if let Ok(client) = client_api_clone.try_lock() {
-                    match client.add_listener(config).await {
-                        Ok(_) => {},
-                        Err(e) => {
-                            eprintln!("Failed to add listener: {}", e);
-                        }
-                    }
+                    let _ = client.add_listener(config).await;
                 }
             });
         });
@@ -676,12 +684,7 @@ impl NetworkAppState {
             let runtime = Runtime::new().unwrap();
             runtime.block_on(async {
                 if let Ok(client) = client_api_clone.try_lock() {
-                    match client.start_listener(id).await {
-                        Ok(_) => {},
-                        Err(e) => {
-                            eprintln!("Failed to start listener: {}", e);
-                        }
-                    }
+                    let _ = client.start_listener(id).await;
                 }
             });
         });
@@ -696,12 +699,7 @@ impl NetworkAppState {
             let runtime = Runtime::new().unwrap();
             runtime.block_on(async {
                 if let Ok(client) = client_api_clone.try_lock() {
-                    match client.stop_listener(id).await {
-                        Ok(_) => {},
-                        Err(e) => {
-                            eprintln!("Failed to stop listener: {}", e);
-                        }
-                    }
+                    let _ = client.stop_listener(id).await;
                 }
             });
         });
@@ -729,12 +727,7 @@ impl NetworkAppState {
             let runtime = Runtime::new().unwrap();
             runtime.block_on(async {
                 if let Ok(client) = client_api_clone.try_lock() {
-                    match client.generate_agent(config).await {
-                        Ok(_) => {},
-                        Err(e) => {
-                            eprintln!("Failed to generate agent: {}", e);
-                        }
-                    }
+                    let _ = client.generate_agent(config).await;
                 }
             });
         });
@@ -749,8 +742,8 @@ impl NetworkAppState {
             }
         }
     }
-    
-    // Dashboard rendering with professional styling
+
+    // Dashboard rendering
     fn render_dashboard(&mut self, ui: &mut Ui) {
         let bg_medium = Color32::from_rgb(25, 25, 25);
         let accent_blue = Color32::from_rgb(100, 149, 237);
@@ -766,7 +759,7 @@ impl NetworkAppState {
         let agent_count = self.agents.len();
         let active_listeners = self.listeners.iter().filter(|l| l.running).count();
         
-        // Statistics cards with enhanced styling
+        // Statistics cards
         ui.horizontal(|ui| {
             Frame::none()
                 .fill(bg_medium)
@@ -775,12 +768,9 @@ impl NetworkAppState {
                 .show(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.label(RichText::new(format!("📡 {} Listeners", listener_count))
-                            .color(accent_blue)
-                            .size(16.0)
-                            .strong());
+                            .color(accent_blue).size(16.0).strong());
                         ui.label(RichText::new(format!("{} active, {} stopped", active_listeners, listener_count - active_listeners))
-                            .color(text_secondary)
-                            .size(12.0));
+                            .color(text_secondary).size(12.0));
                         if ui.add(Button::new(RichText::new("Manage Listeners").color(Color32::WHITE))
                             .fill(accent_blue)).clicked() {
                             self.current_tab = Tab::Listeners;
@@ -797,12 +787,9 @@ impl NetworkAppState {
                 .show(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.label(RichText::new(format!("🔴 {} Live Beacons", agent_count))
-                            .color(accent_red)
-                            .size(16.0)
-                            .strong());
+                            .color(accent_red).size(16.0).strong());
                         ui.label(RichText::new("Real-time beacon connections")
-                            .color(text_secondary)
-                            .size(12.0));
+                            .color(text_secondary).size(12.0));
                         if ui.add(Button::new(RichText::new("View Beacons").color(Color32::WHITE))
                             .fill(accent_red)).clicked() {
                             self.current_tab = Tab::Agents;
@@ -917,7 +904,6 @@ impl NetworkAppState {
                 ui.add_space(20.0);
             });
         } else {
-            // Collect listener data to avoid borrowing issues
             let listeners_data: Vec<_> = self.listeners.iter().enumerate().map(|(index, listener)| {
                 (index, listener.running, listener.config.listener_type.clone(), 
                  listener.config.host.clone(), listener.config.port)
@@ -1083,121 +1069,7 @@ impl NetworkAppState {
     }
     
     fn render_bof(&mut self, ui: &mut Ui) {
-        let accent_blue = Color32::from_rgb(100, 149, 237);
-        let text_secondary = Color32::from_rgb(170, 170, 170);
-        
-        ui.heading(RichText::new("⚡ BOF Execution").color(accent_blue).size(18.0));
-        ui.separator();
-        
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-            ui.label(RichText::new("🚧 Under Development").color(Color32::YELLOW).size(16.0));
-            ui.label(RichText::new("BOF (Beacon Object File) execution will be implemented soon")
-                .color(text_secondary).size(12.0));
-            ui.label(RichText::new("Use the Beacons tab to interact with connected beacons")
-                .color(text_secondary).size(12.0));
-            ui.add_space(50.0);
-        });
-    }
-    
-    fn render_settings(&mut self, ui: &mut Ui) {
-        let accent_blue = Color32::from_rgb(100, 149, 237);
-        let text_secondary = Color32::from_rgb(170, 170, 170);
-        
-        ui.heading(RichText::new("⚙️ Settings").color(accent_blue).size(18.0));
-        ui.separator();
-        
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-            ui.label(RichText::new("🔧 Configuration Panel").color(Color32::YELLOW).size(16.0));
-            ui.label(RichText::new("Settings panel coming soon!")
-                .color(text_secondary).size(12.0));
-            ui.add_space(50.0);
-        });
-    }
-}
-
-
-pub struct NetworkAppState {
-    // ... your existing fields ...
-    
-    // ADD these new BOF-related fields:
-    
-    // BOF management
-    bof_library: Vec<serde_json::Value>,
-    bof_stats: HashMap<String, u64>,
-    bof_search_results: Vec<serde_json::Value>,
-    
-    // BOF UI state
-    bof_search_query: String,
-    selected_bof_name: Option<String>,
-    bof_args_input: String,
-    bof_target_agent: Option<String>,
-    show_bof_help: bool,
-    bof_help_text: String,
-    bof_help_name: String,
-    
-    // BOF execution state
-    show_bof_library_tab: bool,
-    show_bof_execution_tab: bool,
-    show_bof_stats_tab: bool,
-}
-
-// ADD these to your NetworkAppState::new() method:
-impl NetworkAppState {
-    pub fn new(client_api: Arc<Mutex<ClientApi>>) -> Self {
-        NetworkAppState {
-            // ... your existing fields initialization ...
-            
-            // ADD these BOF field initializations:
-            bof_library: Vec::new(),
-            bof_stats: HashMap::new(),
-            bof_search_results: Vec::new(),
-            
-            bof_search_query: String::new(),
-            selected_bof_name: None,
-            bof_args_input: String::new(),
-            bof_target_agent: None,
-            show_bof_help: false,
-            bof_help_text: String::new(),
-            bof_help_name: String::new(),
-            
-            show_bof_library_tab: true,
-            show_bof_execution_tab: false,
-            show_bof_stats_tab: false,
-        }
-    }
-
-    // ADD this method to handle BOF-related server messages in your poll_server method:
-    fn handle_bof_messages(&mut self, msg: &ServerMessage) {
-        match msg {
-            ServerMessage::BofLibrary { bofs } => {
-                self.bof_library = bofs.clone();
-                println!("📚 Received BOF library with {} BOFs", bofs.len());
-            },
-            ServerMessage::BofStats { stats } => {
-                self.bof_stats = stats.clone();
-                println!("📊 Received BOF statistics");
-            },
-            ServerMessage::BofHelp { bof_name, help_text } => {
-                self.bof_help_name = bof_name.clone();
-                self.bof_help_text = help_text.clone();
-                self.show_bof_help = true;
-                println!("📖 Received help for BOF: {}", bof_name);
-            },
-            ServerMessage::BofSearchResults { results } => {
-                self.bof_search_results = results.clone();
-                println!("🔍 Received {} BOF search results", results.len());
-            },
-            _ => {} // Handle other messages normally
-        }
-    }
-
-    // REPLACE your existing render_bof method with this enhanced version:
-    fn render_bof(&mut self, ui: &mut Ui) {
-        let bg_dark = Color32::from_rgb(15, 15, 15);
         let bg_medium = Color32::from_rgb(25, 25, 25);
-        let bg_light = Color32::from_rgb(35, 35, 35);
         let accent_blue = Color32::from_rgb(100, 149, 237);
         let accent_green = Color32::from_rgb(152, 251, 152);
         let accent_red = Color32::from_rgb(255, 105, 97);
@@ -1208,7 +1080,7 @@ impl NetworkAppState {
 
         ui.heading(RichText::new("⚡ BOF Execution & Management").color(accent_purple).size(18.0));
         
-        // BOF statistics and quick info
+        // BOF statistics
         Frame::none()
             .fill(bg_medium)
             .inner_margin(Margin::same(8.0))
@@ -1230,24 +1102,14 @@ impl NetworkAppState {
 
         ui.separator();
 
-        // Tab navigation for BOF management
+        // Tab navigation
         ui.horizontal(|ui| {
             if ui.selectable_label(self.show_bof_library_tab, 
                 RichText::new("📚 BOF Library").color(if self.show_bof_library_tab { accent_green } else { text_primary })).clicked() {
                 self.show_bof_library_tab = true;
                 self.show_bof_execution_tab = false;
                 self.show_bof_stats_tab = false;
-                
-                // Request BOF library from server
-                let client_api_clone = self.client_api.clone();
-                self.runtime.spawn_blocking(move || {
-                    let runtime = Runtime::new().unwrap();
-                    runtime.block_on(async {
-                        if let Ok(client) = client_api_clone.try_lock() {
-                            let _ = client.get_bof_library().await;
-                        }
-                    });
-                });
+                self.refresh_bof_library();
             }
             
             if ui.selectable_label(self.show_bof_execution_tab, 
@@ -1263,7 +1125,6 @@ impl NetworkAppState {
                 self.show_bof_execution_tab = false;
                 self.show_bof_stats_tab = true;
                 
-                // Request BOF stats from server
                 let client_api_clone = self.client_api.clone();
                 self.runtime.spawn_blocking(move || {
                     let runtime = Runtime::new().unwrap();
@@ -1282,9 +1143,9 @@ impl NetworkAppState {
         if self.show_bof_library_tab {
             self.render_bof_library(ui, bg_medium, accent_blue, accent_green, accent_red, accent_yellow, text_primary, text_secondary);
         } else if self.show_bof_execution_tab {
-            self.render_bof_execution(ui, bg_medium, accent_blue, accent_green, accent_red, accent_yellow, text_primary, text_secondary);
+            self.render_bof_execution(ui, bg_medium, accent_blue, accent_green, accent_red, text_primary);
         } else if self.show_bof_stats_tab {
-            self.render_bof_statistics(ui, bg_medium, accent_blue, accent_green, accent_red, accent_yellow, text_primary, text_secondary);
+            self.render_bof_statistics(ui, bg_medium, accent_blue, accent_green, accent_red, accent_yellow, text_secondary);
         }
 
         // BOF help window
@@ -1307,7 +1168,7 @@ impl NetworkAppState {
         }
     }
 
-    // ADD this new method for BOF library rendering:
+    // BOF rendering methods
     fn render_bof_library(&mut self, ui: &mut Ui, bg_medium: Color32, accent_blue: Color32, accent_green: Color32, 
                          accent_red: Color32, accent_yellow: Color32, text_primary: Color32, text_secondary: Color32) {
         
@@ -1372,12 +1233,10 @@ impl NetworkAppState {
                         })
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                // BOF info
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
                                         ui.label(RichText::new(name).color(accent_blue).size(14.0).strong());
                                         
-                                        // OPSEC level indicator
                                         let (opsec_icon, opsec_color) = match opsec_level {
                                             "Stealth" => ("🟢", accent_green),
                                             "Careful" => ("🟡", accent_yellow),
@@ -1414,11 +1273,9 @@ impl NetworkAppState {
         }
     }
 
-    // ADD this new method for BOF execution rendering:
     fn render_bof_execution(&mut self, ui: &mut Ui, bg_medium: Color32, accent_blue: Color32, accent_green: Color32, 
-                           accent_red: Color32, accent_yellow: Color32, text_primary: Color32, text_secondary: Color32) {
+                           accent_red: Color32, text_primary: Color32) {
         
-        // BOF selection and arguments
         Frame::none()
             .fill(bg_medium)
             .inner_margin(Margin::same(10.0))
@@ -1505,9 +1362,8 @@ impl NetworkAppState {
             });
     }
 
-    // ADD this new method for BOF statistics rendering:
     fn render_bof_statistics(&mut self, ui: &mut Ui, bg_medium: Color32, accent_blue: Color32, accent_green: Color32, 
-                            accent_red: Color32, accent_yellow: Color32, text_primary: Color32, text_secondary: Color32) {
+                            accent_red: Color32, accent_yellow: Color32, text_secondary: Color32) {
         
         ui.label(RichText::new("📊 BOF Execution Statistics").color(accent_blue).size(16.0).strong());
         
@@ -1578,120 +1434,23 @@ impl NetworkAppState {
                 });
             });
     }
-
-    // ADD these helper methods:
-    fn search_bofs(&mut self) {
-        if !self.bof_search_query.trim().is_empty() {
-            let client_api_clone = self.client_api.clone();
-            let query = self.bof_search_query.clone();
-            
-            self.runtime.spawn_blocking(move || {
-                let runtime = Runtime::new().unwrap();
-                runtime.block_on(async {
-                    if let Ok(client) = client_api_clone.try_lock() {
-                        let _ = client.search_bofs(&query).await;
-                    }
-                });
-            });
-        }
-    }
-
-    fn refresh_bof_library(&mut self) {
-        let client_api_clone = self.client_api.clone();
+    
+    fn render_settings(&mut self, ui: &mut Ui) {
+        let accent_blue = Color32::from_rgb(100, 149, 237);
+        let text_secondary = Color32::from_rgb(170, 170, 170);
         
-        self.runtime.spawn_blocking(move || {
-            let runtime = Runtime::new().unwrap();
-            runtime.block_on(async {
-                if let Ok(client) = client_api_clone.try_lock() {
-                    let _ = client.get_bof_library().await;
-                }
-            });
-        });
+        ui.heading(RichText::new("⚙️ Settings").color(accent_blue).size(18.0));
+        ui.separator();
         
-        self.set_status("🔄 Refreshing BOF library...");
-    }
-
-    fn get_bof_help(&mut self, bof_name: &str) {
-        let client_api_clone = self.client_api.clone();
-        let name = bof_name.to_string();
-        
-        self.runtime.spawn_blocking(move || {
-            let runtime = Runtime::new().unwrap();
-            runtime.block_on(async {
-                if let Ok(client) = client_api_clone.try_lock() {
-                    let _ = client.get_bof_help(&name).await;
-                }
-            });
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+            ui.label(RichText::new("🔧 Configuration Panel").color(Color32::YELLOW).size(16.0));
+            ui.label(RichText::new("Settings panel coming soon!")
+                .color(text_secondary).size(12.0));
+            ui.add_space(50.0);
         });
     }
-
-    fn execute_selected_bof(&mut self) {
-        if let (Some(ref bof_name), Some(ref target)) = (&self.selected_bof_name, &self.bof_target_agent) {
-            let client_api_clone = self.client_api.clone();
-            let name = bof_name.clone();
-            let args = self.bof_args_input.clone();
-            let target_clone = target.clone();
-            
-            self.runtime.spawn_blocking(move || {
-                let runtime = Runtime::new().unwrap();
-                runtime.block_on(async {
-                    if let Ok(client) = client_api_clone.try_lock() {
-                        let _ = client.execute_bof_by_name(&name, &args, &target_clone).await;
-                    }
-                });
-            });
-            
-            self.set_status(&format!("🚀 Executing BOF '{}' on target '{}'", bof_name, target));
-            
-            // Clear inputs after execution
-            self.bof_args_input.clear();
-        }
-    }
-
-    // UPDATE your existing poll_server method to handle BOF messages:
-    fn poll_server(&mut self) {
-        let client_api_clone = self.client_api.clone();
-        let client_opt = client_api_clone.try_lock().ok();
-        
-        if let Some(mut client) = client_opt {
-            while let Some(msg) = client.try_receive_message() {
-                // Handle BOF messages
-                self.handle_bof_messages(&msg);
-                
-                // Handle existing messages (your existing code)
-                match &msg {
-                    ServerMessage::CommandResult { agent_id, task_id, output, success, .. } => {
-                        // Your existing command result handling
-                        println!("📥 CLIENT: Received CommandResult for agent {}", agent_id);
-                        // ... your existing code ...
-                    },
-                    ServerMessage::ListenersUpdate { listeners } => {
-                        self.listeners = listeners.clone();
-                    },
-                    ServerMessage::AgentsUpdate { agents } => {
-                        self.agents = agents.clone();
-                        // Update beacon sessions for new agents
-                        for agent in agents {
-                            if !self.beacon_sessions.contains_key(&agent.id) {
-                                let session = BeaconSession {
-                                    agent_id: agent.id.clone(),
-                                    hostname: agent.hostname.clone(),
-                                    username: agent.username.clone(),
-                                    command_history: Vec::new(),
-                                    current_directory: "C:\\".to_string(),
-                                };
-                                self.beacon_sessions.insert(agent.id.clone(), session);
-                            }
-                        }
-                    },
-                    // ... handle your other existing messages ...
-                    _ => {}
-                }
-            }
-        }
-        
-        // ... rest of your existing poll_server code ...
-    }
+}
 
 impl eframe::App for NetworkAppState {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
