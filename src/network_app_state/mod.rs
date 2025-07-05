@@ -1,13 +1,11 @@
-// src/network_app_state/mod.rs - Final fixed version
+// src/network_app_state/mod.rs - Fixed with proper BOF structures (no more serde_json::Value)
 use eframe::egui::{Context, Color32, RichText, Frame, Margin};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::cell::RefCell;
 use tokio::runtime::Runtime;
 
-use crate::client_api::{ClientApi, ServerMessage, ListenerInfo};
+use crate::client_api::{ClientApi, ServerMessage, ListenerInfo, BofMetadata, BofExecutionResult, BofFileInfo};
 use crate::listener::ListenerType;
 use crate::models::agent::Agent;
 
@@ -53,10 +51,11 @@ pub struct NetworkAppState {
     pub agent_injection: String,
     pub agent_output_path: String,
     
-    // BOF form state
-    pub bof_library: Vec<serde_json::Value>,
+    // BOF form state (FIXED - using proper structures)
+    pub bof_library: Vec<BofMetadata>,  // CHANGED: Vec<BofMetadata> instead of Vec<serde_json::Value>
     pub bof_stats: HashMap<String, u64>,
-    pub bof_search_results: Vec<serde_json::Value>,
+    pub bof_search_results: Vec<BofMetadata>,  // CHANGED: Vec<BofMetadata> instead of Vec<serde_json::Value>
+    pub bof_files: Vec<BofFileInfo>,  // NEW: For BOF file management
     pub bof_search_query: String,
     pub selected_bof_name: Option<String>,
     pub bof_args_input: String,
@@ -67,6 +66,8 @@ pub struct NetworkAppState {
     pub show_bof_library_tab: bool,
     pub show_bof_execution_tab: bool,
     pub show_bof_stats_tab: bool,
+    pub show_bof_import_tab: bool,  // NEW: For BOF import tab
+    pub bof_import_path: String,  // NEW: For BOF import functionality
     
     // Enhanced command execution state
     pub command_input: String,
@@ -112,10 +113,11 @@ impl NetworkAppState {
             agent_injection: "self".to_string(),
             agent_output_path: "agent.exe".to_string(),
             
-            // BOF field initializations
+            // BOF field initializations (FIXED)
             bof_library: Vec::new(),
             bof_stats: HashMap::new(),
             bof_search_results: Vec::new(),
+            bof_files: Vec::new(),
             bof_search_query: String::new(),
             selected_bof_name: None,
             bof_args_input: String::new(),
@@ -126,6 +128,8 @@ impl NetworkAppState {
             show_bof_library_tab: true,
             show_bof_execution_tab: false,
             show_bof_stats_tab: false,
+            show_bof_import_tab: false,
+            bof_import_path: String::new(),
             
             command_input: String::new(),
             selected_agent: None,
@@ -152,7 +156,7 @@ impl NetworkAppState {
         self.status_time = Some(Instant::now());
     }
 
-    // Handle BOF-related server messages
+    // Handle BOF-related server messages (FIXED)
     fn handle_bof_messages(&mut self, msg: &ServerMessage) {
         match msg {
             ServerMessage::BofLibrary { bofs } => {
@@ -173,7 +177,43 @@ impl NetworkAppState {
                 self.bof_search_results = results.clone();
                 println!("🔍 Received {} BOF search results", results.len());
             },
+            ServerMessage::BofExecutionComplete { result } => {
+                self.handle_bof_execution_result(result);
+            },
+            ServerMessage::BofFilesList { files } => {
+                self.bof_files = files.clone();
+                println!("📂 Received {} BOF files", files.len());
+            },
             _ => {} // Handle other messages normally
+        }
+    }
+
+    // NEW: Handle BOF execution results
+    fn handle_bof_execution_result(&mut self, result: &BofExecutionResult) {
+        println!("🔥 BOF execution completed: {}", result.bof_name);
+        
+        // If this was executed on a specific agent, add to beacon console
+        if let Some(beacon_id) = &self.active_beacon {
+            if let Some(session) = self.beacon_sessions.get_mut(beacon_id) {
+                // Find the most recent BOF command in history
+                for cmd_entry in session.command_history.iter_mut().rev() {
+                    if cmd_entry.command.starts_with(&format!("bof {}", result.bof_name)) && cmd_entry.output.is_none() {
+                        cmd_entry.output = Some(result.output.clone());
+                        cmd_entry.success = result.success;
+                        self.console_scroll_to_bottom = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Update status
+        if result.success {
+            self.set_status(&format!("✅ BOF '{}' completed successfully ({}ms)", 
+                result.bof_name, result.execution_time_ms));
+        } else {
+            self.set_status(&format!("❌ BOF '{}' failed: {}", 
+                result.bof_name, result.error));
         }
     }
     
@@ -336,6 +376,39 @@ impl NetworkAppState {
         self.selected_agent = Some(agent_id.to_string());
         self.command_input_focus = true;
     }
+
+    // NEW: BOF import functionality
+    pub fn import_bof(&mut self, file_path: &str) {
+        let client_api_clone = self.client_api.clone();
+        let path = file_path.to_string();
+        
+        self.runtime.spawn_blocking(move || {
+            let runtime = Runtime::new().unwrap();
+            runtime.block_on(async {
+                if let Ok(client) = client_api_clone.try_lock() {
+                    let _ = client.import_bof(&path).await;
+                }
+            });
+        });
+        
+        self.set_status(&format!("📂 Importing BOF: {}", file_path));
+    }
+
+    // NEW: Load BOF files list
+    pub fn load_bof_files(&mut self) {
+        let client_api_clone = self.client_api.clone();
+        
+        self.runtime.spawn_blocking(move || {
+            let runtime = Runtime::new().unwrap();
+            runtime.block_on(async {
+                if let Ok(client) = client_api_clone.try_lock() {
+                    let _ = client.list_bof_files().await;
+                }
+            });
+        });
+        
+        self.set_status("📂 Loading BOF files...");
+    }
 }
 
 impl eframe::App for NetworkAppState {
@@ -352,14 +425,18 @@ impl eframe::App for NetworkAppState {
         // Request frequent repaints for live updates
         ctx.request_repaint_after(Duration::from_millis(1000));
         
-        // Handle beacon console window - simplified approach
+        // Handle beacon console window - FIXED interaction
         if self.show_beacon_console {
             if let Some(beacon_id) = &self.active_beacon.clone() {
                 let session = self.beacon_sessions.get(beacon_id).cloned();
                 if let Some(session) = session {
-                    // Simple no-op closure - we'll handle command execution differently
-                    let execute_command_closure = |_agent_id: &str, _command: &str| {
-                        // Commands will be handled through the UI directly
+                    // Create proper closure for command execution
+                    let mut app_ptr = self as *mut NetworkAppState;
+                    let execute_command_closure = move |agent_id: &str, command: &str| {
+                        unsafe {
+                            let app = &mut *app_ptr;
+                            app.execute_command(agent_id, command);
+                        }
                     };
                     
                     BeaconConsole::render_window(
@@ -389,14 +466,14 @@ impl eframe::App for NetworkAppState {
                             .size(16.0)
                             .strong());
                         
-                        ui.label(RichText::new("LIVE")
+                        ui.label(RichText::new("ENHANCED BOF")
                             .color(Color32::from_rgb(152, 251, 152))
                             .size(12.0)
                             .strong());
                         
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(RichText::new(format!("Beacons: {} | Listeners: {}", 
-                                self.agents.len(), self.listeners.len()))
+                            ui.label(RichText::new(format!("Beacons: {} | Listeners: {} | BOFs: {}", 
+                                self.agents.len(), self.listeners.len(), self.bof_library.len()))
                                 .color(Color32::from_rgb(170, 170, 170))
                                 .size(12.0));
                             
@@ -474,9 +551,13 @@ impl NetworkAppState {
         
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
-            ui.label(RichText::new("🔧 Configuration Panel").color(Color32::YELLOW).size(16.0));
-            ui.label(RichText::new("Settings panel coming soon!")
-                .color(text_secondary).size(12.0));
+            ui.label(RichText::new("🔧 Enhanced C2 Configuration").color(Color32::YELLOW).size(16.0));
+            ui.label(RichText::new("BOF Import: Enabled")
+                .color(Color32::GREEN).size(12.0));
+            ui.label(RichText::new("Beacon Interaction: Enhanced")
+                .color(Color32::GREEN).size(12.0));
+            ui.label(RichText::new("Real-time BOF Results: Active")
+                .color(Color32::GREEN).size(12.0));
             ui.add_space(50.0);
         });
     }

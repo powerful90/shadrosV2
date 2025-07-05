@@ -1,4 +1,4 @@
-// src/network_app_state/bof.rs - BOF (Beacon Object File) rendering and management
+// src/network_app_state/bof.rs - BOF (Beacon Object File) rendering and management - FIXED
 use eframe::egui::{Ui, Color32, RichText, ScrollArea, Button, Frame, Margin, Rounding, Stroke, TextEdit};
 use tokio::runtime::Runtime;
 
@@ -590,8 +590,8 @@ fn render_opsec_breakdown(
         });
 }
 
-/// Render recent executions placeholder
-fn render_recent_executions(ui: &mut Ui, bg_medium: Color32, accent_blue: Color32, _text_secondary: Color32) {
+/// Render recent executions placeholder - FIXED
+fn render_recent_executions(ui: &mut Ui, bg_medium: Color32, accent_blue: Color32, text_secondary: Color32) {
     ui.label(RichText::new("⏱️ Recent BOF Executions").color(accent_blue).size(14.0).strong());
     
     Frame::none()

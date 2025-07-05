@@ -1,4 +1,4 @@
-// src/client_api.rs - Complete BOF Integration (FIXED - removed unused import)
+// src/client_api.rs - Fixed with proper BOF structures (no more serde_json::Value)
 use std::net::SocketAddr;
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,7 +10,43 @@ use crate::listener::{ListenerConfig};
 use crate::agent::{AgentConfig};
 use crate::models::agent::Agent;
 
-// Complete message types with BOF support
+// Fixed BOF data structures (no more serde_json::Value)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BofMetadata {
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub version: String,
+    pub file_path: String,
+    pub file_size: u64,
+    pub help_text: String,
+    pub usage_examples: Vec<String>,
+    pub opsec_level: String,
+    pub tactics: Vec<String>,
+    pub techniques: Vec<String>,
+    pub execution_time_estimate: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BofExecutionResult {
+    pub success: bool,
+    pub output: String,
+    pub error: String,
+    pub execution_time_ms: u64,
+    pub exit_code: i32,
+    pub bof_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BofFileInfo {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub imported: bool,
+    pub last_modified: u64,
+}
+
+// Complete message types with BOF support (FIXED)
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientMessage {
     // Authentication
@@ -27,12 +63,14 @@ pub enum ClientMessage {
     GetAgents,
     ExecuteCommand { agent_id: String, command: String },
     
-    // Enhanced BOF support
+    // Enhanced BOF support (FIXED)
     ExecuteBofByName { bof_name: String, args: String, target: String },
     GetBofLibrary,
     GetBofHelp { bof_name: String },
     SearchBofs { query: String },
     GetBofStats,
+    ImportBof { file_path: String },
+    ListBofFiles,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -47,11 +85,13 @@ pub enum ServerMessage {
     AgentsUpdate { agents: Vec<Agent> },
     CommandResult { agent_id: String, task_id: String, command: String, output: String, success: bool },
     
-    // BOF responses
-    BofLibrary { bofs: Vec<serde_json::Value> },
+    // BOF responses (FIXED - using proper structures)
+    BofLibrary { bofs: Vec<BofMetadata> },
     BofHelp { bof_name: String, help_text: String },
-    BofSearchResults { results: Vec<serde_json::Value> },
+    BofSearchResults { results: Vec<BofMetadata> },
     BofStats { stats: HashMap<String, u64> },
+    BofExecutionComplete { result: BofExecutionResult },
+    BofFilesList { files: Vec<BofFileInfo> },
     
     // General responses
     Error { message: String },
@@ -105,7 +145,7 @@ impl ClientApi {
         
         // Spawn receiver task
         tokio::spawn(async move {
-            let mut buffer = [0u8; 8192];
+            let mut buffer = [0u8; 16384]; // Increased buffer size
             
             loop {
                 let mut len_bytes = [0u8; 4];
@@ -391,6 +431,44 @@ impl ClientApi {
             
             tx.send(msg).await
                 .map_err(|e| format!("Failed to send search BOFs message: {}", e))?;
+            
+            Ok(())
+        } else {
+            Err("Internal client error".into())
+        }
+    }
+
+    /// Import a BOF file
+    pub async fn import_bof(&self, file_path: &str) -> Result<(), String> {
+        if !self.authenticated {
+            return Err("Not authenticated".into());
+        }
+        
+        if let Some(tx) = &self.tx {
+            let msg = ClientMessage::ImportBof { 
+                file_path: file_path.to_string()
+            };
+            
+            tx.send(msg).await
+                .map_err(|e| format!("Failed to send import BOF message: {}", e))?;
+            
+            Ok(())
+        } else {
+            Err("Internal client error".into())
+        }
+    }
+
+    /// List available BOF files
+    pub async fn list_bof_files(&self) -> Result<(), String> {
+        if !self.authenticated {
+            return Err("Not authenticated".into());
+        }
+        
+        if let Some(tx) = &self.tx {
+            let msg = ClientMessage::ListBofFiles;
+            
+            tx.send(msg).await
+                .map_err(|e| format!("Failed to send list BOF files message: {}", e))?;
             
             Ok(())
         } else {
