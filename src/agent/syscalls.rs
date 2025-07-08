@@ -1,5 +1,5 @@
-// src/agent/syscalls.rs - Syscall evasion implementation (~100 lines)
-use std::ptr;
+// src/agent/syscalls.rs - FIXED: Syscall evasion implementation
+// REMOVED: use std::ptr; (unused import)
 use std::collections::HashMap;
 
 // Syscall resolver for EDR bypass
@@ -108,14 +108,14 @@ impl SyscallResolver {
         None
     }
     
-    // Get function address from exports
-    fn get_function_address(&self, ntdll_base: usize, function_name: &str) -> Option<usize> {
+    // Get function address from exports - FIXED: prefixed unused parameters
+    fn get_function_address(&self, _ntdll_base: usize, _function_name: &str) -> Option<usize> {
         // Implementation would parse PE exports table
         None
     }
     
-    // Get sorted exports for Halo's Gate
-    fn get_sorted_exports(&self, ntdll_base: usize) -> Option<Vec<(String, usize)>> {
+    // Get sorted exports for Halo's Gate - FIXED: prefixed unused parameter
+    fn get_sorted_exports(&self, _ntdll_base: usize) -> Option<Vec<(String, usize)>> {
         // Implementation would return sorted Nt* functions
         None
     }
@@ -125,8 +125,8 @@ impl SyscallResolver {
 pub struct IndirectSyscall;
 
 impl IndirectSyscall {
-    // Execute syscall via NTDLL's syscall instruction
-    pub unsafe fn execute(ssn: u16, syscall_addr: usize, args: &[usize]) -> usize {
+    // Execute syscall via NTDLL's syscall instruction - FIXED: prefixed unused parameters
+    pub unsafe fn execute(_ssn: u16, _syscall_addr: usize, _args: &[usize]) -> usize {
         #[cfg(target_arch = "x86_64")]
         {
             let result: usize;

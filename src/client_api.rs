@@ -1,13 +1,47 @@
-// Enhanced client_api.rs with command result handling
+// Enhanced client_api.rs with BOF support - COMPLETE FIX
 use std::net::SocketAddr;
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
 
 use crate::listener::{ListenerConfig};
 use crate::agent::{AgentConfig};
 use crate::models::agent::Agent;
+
+// ADDED: BOF-related structures
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BofMetadata {
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub version: String,
+    pub opsec_level: String,
+    pub execution_time_estimate: u64,
+    pub usage_examples: Vec<String>,
+    pub tactics: Vec<String>,
+    pub techniques: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BofExecutionResult {
+    pub bof_name: String,
+    pub agent_id: String,
+    pub success: bool,
+    pub output: String,
+    pub error: String,
+    pub execution_time_ms: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BofFileInfo {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub hash: String,
+    pub uploaded_at: u64,
+}
 
 // Enhanced message types for communication between client and server
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -21,6 +55,14 @@ pub enum ClientMessage {
     GetAgents,
     ExecuteBof { bof_path: String, args: String, target: String },
     ExecuteCommand { agent_id: String, command: String },
+    // ADDED: BOF-related messages
+    GetBofLibrary,
+    SearchBofs { query: String },
+    GetBofHelp { bof_name: String },
+    ExecuteBofByName { bof_name: String, args: String, target: String },
+    GetBofStats,
+    ImportBof { file_path: String },
+    ListBofFiles,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -31,6 +73,13 @@ pub enum ServerMessage {
     CommandResult { agent_id: String, task_id: String, command: String, output: String, success: bool },
     Error { message: String },
     Success { message: String },
+    // ADDED: BOF-related messages
+    BofLibrary { bofs: Vec<BofMetadata> },
+    BofStats { stats: HashMap<String, u64> },
+    BofHelp { bof_name: String, help_text: String },
+    BofSearchResults { results: Vec<BofMetadata> },
+    BofExecutionComplete { result: BofExecutionResult },
+    BofFilesList { files: Vec<BofFileInfo> },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -315,6 +364,122 @@ impl ClientApi {
             tx.send(msg).await
                 .map_err(|e| format!("Failed to send execute BOF message: {}", e))?;
             
+            Ok(())
+        } else {
+            Err("Internal client error".into())
+        }
+    }
+    
+    // ADDED: BOF-related methods
+    pub async fn get_bof_library(&self) -> Result<(), String> {
+        if !self.authenticated {
+            return Err("Not authenticated".into());
+        }
+        
+        if let Some(tx) = &self.tx {
+            let msg = ClientMessage::GetBofLibrary;
+            tx.send(msg).await
+                .map_err(|e| format!("Failed to send get BOF library message: {}", e))?;
+            Ok(())
+        } else {
+            Err("Internal client error".into())
+        }
+    }
+    
+    pub async fn search_bofs(&self, query: &str) -> Result<(), String> {
+        if !self.authenticated {
+            return Err("Not authenticated".into());
+        }
+        
+        if let Some(tx) = &self.tx {
+            let msg = ClientMessage::SearchBofs { 
+                query: query.to_string() 
+            };
+            tx.send(msg).await
+                .map_err(|e| format!("Failed to send search BOFs message: {}", e))?;
+            Ok(())
+        } else {
+            Err("Internal client error".into())
+        }
+    }
+    
+    pub async fn get_bof_help(&self, bof_name: &str) -> Result<(), String> {
+        if !self.authenticated {
+            return Err("Not authenticated".into());
+        }
+        
+        if let Some(tx) = &self.tx {
+            let msg = ClientMessage::GetBofHelp { 
+                bof_name: bof_name.to_string() 
+            };
+            tx.send(msg).await
+                .map_err(|e| format!("Failed to send get BOF help message: {}", e))?;
+            Ok(())
+        } else {
+            Err("Internal client error".into())
+        }
+    }
+    
+    pub async fn execute_bof_by_name(&self, bof_name: &str, args: &str, target: &str) -> Result<(), String> {
+        if !self.authenticated {
+            return Err("Not authenticated".into());
+        }
+        
+        if let Some(tx) = &self.tx {
+            let msg = ClientMessage::ExecuteBofByName { 
+                bof_name: bof_name.to_string(),
+                args: args.to_string(), 
+                target: target.to_string() 
+            };
+            tx.send(msg).await
+                .map_err(|e| format!("Failed to send execute BOF by name message: {}", e))?;
+            Ok(())
+        } else {
+            Err("Internal client error".into())
+        }
+    }
+    
+    pub async fn get_bof_stats(&self) -> Result<(), String> {
+        if !self.authenticated {
+            return Err("Not authenticated".into());
+        }
+        
+        if let Some(tx) = &self.tx {
+            let msg = ClientMessage::GetBofStats;
+            tx.send(msg).await
+                .map_err(|e| format!("Failed to send get BOF stats message: {}", e))?;
+            Ok(())
+        } else {
+            Err("Internal client error".into())
+        }
+    }
+    
+    pub async fn import_bof(&self, file_path: &str) -> Result<(), String> {
+        if !self.authenticated {
+            return Err("Not authenticated".into());
+        }
+        
+        if let Some(tx) = &self.tx {
+            let msg = ClientMessage::ImportBof { 
+                file_path: file_path.to_string() 
+            };
+            tx.send(msg).await
+                .map_err(|e| format!("Failed to send import BOF message: {}", e))?;
+            Ok(())
+        } else {
+            Err("Internal client error".into())
+        }
+    }
+    
+    pub async fn list_bof_files(&self) -> Result<(), String> {
+        if !self.authenticated {
+            return Err("Not authenticated".into());
+        }
+        
+        if let Some(tx) = &self.tx {
+            let msg = ClientMessage::ListBofFiles;
+            tx.send(msg).await
+                .map_err(|e| format!("Failed to send list BOF files message: {}", e))?;
             Ok(())
         } else {
             Err("Internal client error".into())

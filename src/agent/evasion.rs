@@ -1,7 +1,7 @@
-// src/agent/evasion.rs - Core evasion configuration and techniques (~100 lines)
+// src/agent/evasion.rs - FIXED: Core evasion configuration and techniques
 use serde::{Serialize, Deserialize};
 use std::time::{Duration, SystemTime};
-use std::collections::HashMap;
+// REMOVED: use std::collections::HashMap; (unused import)
 use rand::Rng;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -102,7 +102,7 @@ impl JitterEngine {
     }
     
     pub fn business_hours_sleep(&self) -> Duration {
-        let now = SystemTime::now();
+        let _now = SystemTime::now(); // FIXED: prefixed with underscore
         // Implement business hours logic
         // Longer sleeps during off-hours (nights/weekends)
         let hour = 9; // Simplified - would extract actual hour
@@ -139,7 +139,7 @@ impl ApiHasher {
         hash
     }
     
-    pub fn resolve_api_by_hash(hash: u32) -> Option<usize> {
+    pub fn resolve_api_by_hash(_hash: u32) -> Option<usize> { // FIXED: prefixed with underscore
         // Implementation would resolve Windows APIs by hash
         // to avoid static string detection
         None

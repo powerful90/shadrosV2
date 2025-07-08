@@ -1,9 +1,9 @@
-// src/network_app_state/agents.rs - Agents management
+// src/network_app_state/agents.rs - FIXED: Agents management
 use eframe::egui::{Ui, Color32, RichText, ScrollArea, Button, Frame, Margin, Rounding};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 
-use crate::agent::AgentConfig;
+use crate::agent::{AgentConfig, StealthLevel}; // ADDED: StealthLevel import
 use super::{NetworkAppState, helpers::format_time_ago};
 
 pub fn render(app: &mut NetworkAppState, ui: &mut Ui) {
@@ -135,6 +135,7 @@ fn generate_agent(app: &mut NetworkAppState) {
     let sleep_time = app.agent_sleep_time.parse::<u32>().unwrap_or(60);
     let jitter = app.agent_jitter.parse::<u8>().unwrap_or(10);
     
+    // FIXED: Include all required fields
     let config = AgentConfig {
         listener_url: app.agent_listener_url.clone(),
         format: app.agent_format.clone(),
@@ -143,6 +144,8 @@ fn generate_agent(app: &mut NetworkAppState) {
         jitter,
         injection: app.agent_injection.clone(),
         output_path: app.agent_output_path.clone(),
+        evasion_enabled: false,                    // ADDED: missing field with default
+        stealth_level: StealthLevel::Basic,        // ADDED: missing field with default
     };
     
     let client_api_clone = app.client_api.clone();

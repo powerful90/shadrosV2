@@ -1,4 +1,4 @@
-// src/gui/mod.rs
+// src/gui/mod.rs - FIXED: GUI module with corrected AgentConfig
 use eframe::egui;
 use egui::{Context, Ui, Color32, RichText, ScrollArea, Button};
 use egui_extras::{TableBuilder, Column};
@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::listener::{Listener, ListenerConfig, ListenerType};
-use crate::agent::{AgentGenerator, AgentConfig};
+use crate::agent::{AgentGenerator, AgentConfig, StealthLevel}; // ADDED: StealthLevel import
 use crate::bof::BofExecutor;
 use crate::models::agent::Agent;
 
@@ -37,6 +37,8 @@ pub struct AppState {
     agent_jitter: String,
     agent_injection: String,
     agent_output_path: String,
+    agent_evasion_enabled: bool,    // ADDED: new field
+    agent_stealth_level: StealthLevel, // ADDED: new field
     
     // BOF form state
     bof_file_path: String,
@@ -82,6 +84,8 @@ impl AppState {
             agent_jitter: "10".to_string(),
             agent_injection: "self".to_string(),
             agent_output_path: "agent.exe".to_string(),
+            agent_evasion_enabled: false,              // ADDED: default value
+            agent_stealth_level: StealthLevel::Basic,  // ADDED: default value
             
             bof_file_path: "".to_string(),
             bof_args: "".to_string(),
@@ -101,7 +105,6 @@ impl AppState {
     }
     
     fn add_listener(&mut self) {
-        // Create everything we need up front
         let port = self.listener_port.parse::<u16>().unwrap_or(8080);
         let config = ListenerConfig {
             listener_type: self.listener_type.clone(),
@@ -110,9 +113,7 @@ impl AppState {
         };
         let listener = Listener::new(config);
         
-        // Determine success/failure without holding any reference to self
         let success = {
-            // Clone Arc to avoid borrowing self
             let listeners_arc = self.listeners.clone();
             let result = match listeners_arc.try_lock() {
                 Ok(mut listeners) => {
@@ -121,10 +122,9 @@ impl AppState {
                 },
                 Err(_) => false,
             };
-            result // Explicit return
+            result
         };
         
-        // Now we can call set_status without any borrowing conflicts
         if success {
             self.set_status("Listener added successfully");
         } else {
@@ -133,9 +133,7 @@ impl AppState {
     }
     
     fn start_listener(&mut self, index: usize) {
-        // Create everything we need up front
         let listener_opt = {
-            // Clone Arc to avoid borrowing self
             let listeners_arc = self.listeners.clone();
             let result = match listeners_arc.try_lock() {
                 Ok(listeners) => {
@@ -147,33 +145,27 @@ impl AppState {
                 },
                 Err(_) => None,
             };
-            result // Explicit return
+            result
         };
         
-        // Set status and process result without borrowing conflicts
         if let Some(listener) = listener_opt {
             self.set_status("Starting listener...");
             
             let listeners_arc_clone = self.listeners.clone();
             let index_clone = index;
             
-            // Spawn a thread to avoid blocking the UI
             std::thread::spawn(move || {
-                // Try to start the listener
                 let result = listener.start();
                 
-                // Update the listener in the vector
                 if let Ok(mut listeners) = listeners_arc_clone.lock() {
                     if index_clone < listeners.len() {
                         listeners[index_clone] = listener;
                     }
                 }
                 
-                // The result will be checked later in the update method
                 result
             });
             
-            // Add pending operation to be checked later
             self.pending_operations.push(PendingOperation {
                 message: format!("Started listener at index {}", index),
                 timestamp: Instant::now(),
@@ -184,9 +176,7 @@ impl AppState {
     }
     
     fn stop_listener(&mut self, index: usize) {
-        // Create everything we need up front
         let listener_opt = {
-            // Clone Arc to avoid borrowing self
             let listeners_arc = self.listeners.clone();
             let result = match listeners_arc.try_lock() {
                 Ok(listeners) => {
@@ -198,33 +188,27 @@ impl AppState {
                 },
                 Err(_) => None,
             };
-            result // Explicit return
+            result
         };
         
-        // Set status and process result without borrowing conflicts
         if let Some(listener) = listener_opt {
             self.set_status("Stopping listener...");
             
             let listeners_arc_clone = self.listeners.clone();
             let index_clone = index;
             
-            // Spawn a thread to avoid blocking the UI
             std::thread::spawn(move || {
-                // Try to stop the listener
                 let result = listener.stop();
                 
-                // Update the listener in the vector
                 if let Ok(mut listeners) = listeners_arc_clone.lock() {
                     if index_clone < listeners.len() {
                         listeners[index_clone] = listener;
                     }
                 }
                 
-                // The result will be checked later in the update method
                 result
             });
             
-            // Add pending operation to be checked later
             self.pending_operations.push(PendingOperation {
                 message: format!("Stopped listener at index {}", index),
                 timestamp: Instant::now(),
@@ -234,9 +218,7 @@ impl AppState {
         }
     }
     
-    // Add this helper method to poll for pending operations
     fn check_pending_operations(&mut self) {
-        // Check every 100ms
         let should_check = match self.operation_check_timer {
             Some(time) if time.elapsed() < Duration::from_millis(100) => false,
             _ => {
@@ -249,10 +231,7 @@ impl AppState {
             return;
         }
         
-        // Check for completed operations
         if !self.pending_operations.is_empty() {
-            // Look for operations that have been pending for at least 500ms
-            // This gives time for the operation to likely complete
             let completed: Vec<_> = self.pending_operations
                 .iter()
                 .enumerate()
@@ -260,7 +239,6 @@ impl AppState {
                 .map(|(i, _)| i)
                 .collect();
             
-            // Remove completed operations (in reverse order to avoid index issues)
             for i in completed.into_iter().rev() {
                 if i < self.pending_operations.len() {
                     let op = self.pending_operations.remove(i);
@@ -274,6 +252,7 @@ impl AppState {
         let sleep_time = self.agent_sleep_time.parse::<u32>().unwrap_or(60);
         let jitter = self.agent_jitter.parse::<u8>().unwrap_or(10);
         
+        // FIXED: Include all required fields including the new ones
         let config = AgentConfig {
             listener_url: self.agent_listener_url.clone(),
             format: self.agent_format.clone(),
@@ -282,6 +261,8 @@ impl AppState {
             jitter,
             injection: self.agent_injection.clone(),
             output_path: self.agent_output_path.clone(),
+            evasion_enabled: self.agent_evasion_enabled,    // ADDED: missing field
+            stealth_level: self.agent_stealth_level.clone(), // ADDED: missing field
         };
         
         match self.agent_generator.generate(config) {
@@ -316,10 +297,8 @@ impl AppState {
 
 impl eframe::App for AppState {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // Check for pending operations first
         self.check_pending_operations();
     
-        // Handle status message timeout
         if let Some(time) = self.status_time {
             if time.elapsed() > Duration::from_secs(5) {
                 self.status_message = "".to_string();
@@ -327,7 +306,6 @@ impl eframe::App for AppState {
             }
         }
         
-        // Request a repaint frequently while we have pending operations
         if !self.pending_operations.is_empty() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -386,7 +364,6 @@ impl AppState {
         ui.heading("Dashboard");
         ui.separator();
         
-        // Get counts without borrowing self
         let (listener_count, agent_count) = {
             let listener_count = {
                 let listeners_arc = self.listeners.clone();
@@ -394,7 +371,7 @@ impl AppState {
                     Ok(listeners) => listeners.len(),
                     Err(_) => 0,
                 };
-                result // Explicit return
+                result
             };
             
             let agent_count = {
@@ -403,7 +380,7 @@ impl AppState {
                     Ok(agents) => agents.len(),
                     Err(_) => 0,
                 };
-                result // Explicit return
+                result
             };
             
             (listener_count, agent_count)
@@ -483,12 +460,10 @@ impl AppState {
         // List existing listeners
         ui.heading("Existing Listeners");
         
-        // Get listeners data without borrowing self
         let listeners_data = {
             let listeners_arc = self.listeners.clone();
             let result = match listeners_arc.try_lock() {
                 Ok(listeners) => {
-                    // Pre-collect all data to avoid borrowing issues
                     listeners
                         .iter()
                         .enumerate()
@@ -502,12 +477,11 @@ impl AppState {
                         .collect::<Vec<_>>()
                 },
                 Err(_) => {
-                    // If we can't get the lock, show a message and return empty data
                     ui.label("Listeners data is being updated, please wait...");
                     Vec::new()
                 }
             };
-            result // Explicit return
+            result
         };
         
         if listeners_data.is_empty() && self.pending_operations.is_empty() {
@@ -530,7 +504,6 @@ impl AppState {
                         header.col(|ui| { ui.heading("Stop"); });
                     })
                     .body(|mut body| {
-                        // Use collected data for UI
                         for (index, listener_type, host, port, is_running) in listeners_data {
                             body.row(30.0, |mut row| {
                                 row.col(|ui| { ui.label(format!("{:?}", listener_type)); });
@@ -547,7 +520,6 @@ impl AppState {
                                 row.col(|ui| {
                                     let start_btn = ui.add_enabled(!is_running, Button::new("Start"));
                                     if start_btn.clicked() {
-                                        // Use clone to avoid mutable reference issues
                                         let index_clone = index;
                                         unsafe {
                                             let app_state = &mut *app_state_ptr;
@@ -559,7 +531,6 @@ impl AppState {
                                 row.col(|ui| {
                                     let stop_btn = ui.add_enabled(is_running, Button::new("Stop"));
                                     if stop_btn.clicked() {
-                                        // Use clone to avoid mutable reference issues
                                         let index_clone = index;
                                         unsafe {
                                             let app_state = &mut *app_state_ptr;
@@ -580,7 +551,7 @@ impl AppState {
         
         // Agent generation form
         ui.collapsing("Generate Agent", |ui| {
-            // Configuration options
+            // Basic Configuration
             ui.group(|ui| {
                 ui.heading("Basic Configuration");
                 
@@ -632,6 +603,32 @@ impl AppState {
                 });
             });
             
+            // ADDED: Evasion options
+            ui.group(|ui| {
+                ui.heading("Evasion Options");
+                
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.agent_evasion_enabled, "Enable Evasion");
+                    
+                    ui.label("Stealth Level:");
+                    egui::ComboBox::from_id_source("agent_stealth_level")
+                        .selected_text(format!("{:?}", self.agent_stealth_level))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.agent_stealth_level, StealthLevel::Basic, "Basic");
+                            ui.selectable_value(&mut self.agent_stealth_level, StealthLevel::Advanced, "Advanced");
+                            ui.selectable_value(&mut self.agent_stealth_level, StealthLevel::Maximum, "Maximum");
+                        });
+                });
+                
+                // Show evasion description
+                let description = match self.agent_stealth_level {
+                    StealthLevel::Basic => "Simple obfuscation and jitter",
+                    StealthLevel::Advanced => "Syscalls, sleep masking, polymorphic requests",
+                    StealthLevel::Maximum => "Full evasion suite with domain fronting",
+                };
+                ui.label(RichText::new(description).color(Color32::GRAY));
+            });
+            
             // Output file
             ui.group(|ui| {
                 ui.heading("Output");
@@ -656,12 +653,10 @@ impl AppState {
         // List connected agents
         ui.heading("Connected Agents");
         
-        // Get agent data without borrowing self
         let agent_data = {
             let agents_arc = self.agents.clone();
             let result = match agents_arc.try_lock() {
                 Ok(agents) => {
-                    // Pre-collect all data to avoid borrowing issues
                     agents
                         .iter()
                         .map(|a| (
@@ -675,12 +670,11 @@ impl AppState {
                         .collect::<Vec<_>>()
                 },
                 Err(_) => {
-                    // If we can't get the lock, show a message and return empty data
                     ui.label("Agent data is being updated, please wait...");
                     Vec::new()
                 }
             };
-            result // Explicit return
+            result
         };
         
         if agent_data.is_empty() {
@@ -711,7 +705,6 @@ impl AppState {
                                 row.col(|ui| { ui.label(&os_version); });
                                 row.col(|ui| { ui.label(&ip_address); });
                                 row.col(|ui| { 
-                                    // In a real app, format as date/time
                                     ui.label(format!("{}", last_seen)); 
                                 });
                             });
@@ -741,7 +734,6 @@ impl AppState {
                 ui.text_edit_singleline(&mut self.bof_args);
             });
             
-            // Get agent options without borrowing self
             let agent_options = {
                 let agents_arc = self.agents.clone();
                 let result = match agents_arc.try_lock() {
@@ -753,7 +745,7 @@ impl AppState {
                     },
                     Err(_) => Vec::new()
                 };
-                result // Explicit return
+                result
             };
             
             ui.horizontal(|ui| {
@@ -763,7 +755,6 @@ impl AppState {
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.bof_target, "all".to_string(), "All Agents");
                         
-                        // Add connected agents to dropdown
                         for (agent_id, hostname) in agent_options {
                             ui.selectable_value(
                                 &mut self.bof_target, 
@@ -781,7 +772,6 @@ impl AppState {
         
         ui.separator();
         
-        // Execution history/results would go here
         ui.heading("Execution History");
         ui.label("No execution history available");
     }
@@ -792,4 +782,20 @@ impl AppState {
         
         ui.label("Settings will be implemented in a future version.");
     }
+}
+
+// Export the run function for backwards compatibility
+pub fn run_gui() -> std::io::Result<()> {
+    let options = eframe::NativeOptions {
+        initial_window_size: Some(egui::vec2(1200.0, 800.0)),
+        ..Default::default()
+    };
+    
+    eframe::run_native(
+        "C2 Framework",
+        options,
+        Box::new(|_cc| Box::new(AppState::new())),
+    ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    
+    Ok(())
 }
