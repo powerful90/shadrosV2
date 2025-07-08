@@ -1,4 +1,4 @@
-// src/main.rs
+// src/main.rs - FIXED: Corrected module structure to avoid conflicts
 mod listener;
 mod agent;
 mod bof;
@@ -63,9 +63,15 @@ fn main() {
     };
     
     // Run the application
-    eframe::run_native(
+    match eframe::run_native(
         "C2 Framework",
         native_options,
         Box::new(|_cc| Box::new(AppSwitcher::new())),
-    ).unwrap();
+    ) {
+        Ok(_) => {},
+        Err(e) => {
+            eprintln!("Failed to run eframe application: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
